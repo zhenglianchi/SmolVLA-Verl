@@ -1,0 +1,5 @@
+task: libero_spatial
+n_episodes_per_task: 10
+seed: 1000
+policy_path: /home/ubuntu/runs/smolvla_grpo
+output_dir: /home/ubuntu/results/grpo_libero_spatial

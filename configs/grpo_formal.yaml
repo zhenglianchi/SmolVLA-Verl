@@ -1,0 +1,14 @@
+suite: libero_spatial
+task_ids: [0,1,2,3,4,5,6,7,8,9]
+rollout_n: 4
+groups_per_round: 8
+rounds: 10
+num_runners: 4
+max_steps: 280
+chunk_size: 50
+eta: 0.4
+lr: 1e-6
+clip_epsilon: 0.2
+kl_beta: 0.01
+save_dir: /home/ubuntu/runs/smolvla_grpo
+resume: true

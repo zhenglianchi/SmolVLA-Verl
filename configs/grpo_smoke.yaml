@@ -1,0 +1,14 @@
+suite: libero_spatial
+task_ids: [0]
+rollout_n: 2
+groups_per_round: 1
+rounds: 1
+num_runners: 1
+max_steps: 30
+chunk_size: 10
+eta: 0.4
+lr: 1e-6
+clip_epsilon: 0.2
+kl_beta: 0.01
+save_dir: /home/ubuntu/runs/smolvla_grpo_smoke
+resume: false
