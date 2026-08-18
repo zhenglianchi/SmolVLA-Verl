@@ -235,6 +235,27 @@ def stats():
     return {"groups": GROUP_RESULTS, "episodes": out}
 
 
+@app.post("/dump")
+def dump_sessions():
+    """Debug: pickle the recorded sessions + group results to disk."""
+    import pickle
+
+    out_path = Path(SAVE_DIR) / "session_dump.pkl"
+    with SESSIONS_LOCK:
+        with open(out_path, "wb") as f:
+            pickle.dump(
+                {
+                    "sessions": dict(SESSIONS),
+                    "group_results": GROUP_RESULTS,
+                    "chunk_size": CHUNK_SIZE,
+                    "action_steps": ACTION_STEPS,
+                    "action_dim": ACTION_DIM,
+                },
+                f,
+            )
+    return {"status": "dumped", "path": str(out_path), "episodes": sum(len(eps) for eps in SESSIONS.values())}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "checkpoint": CHECKPOINT, "sessions": len(SESSIONS)}
