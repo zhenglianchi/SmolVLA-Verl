@@ -10,6 +10,9 @@ modelcfg = repo / "src/verl_vla/workers/config/model.py"
 
 def patch(path: Path, old: str, new: str) -> bool:
     s = path.read_text(encoding="utf-8")
+    if new in s:
+        print("SKIP (already patched)", path)
+        return False
     if old in s:
         path.write_text(s.replace(old, new, 1), encoding="utf-8")
         print("PATCHED", path)
