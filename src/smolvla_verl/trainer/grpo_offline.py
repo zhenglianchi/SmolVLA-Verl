@@ -301,30 +301,36 @@ def train_from_sessions(sessions, group_results, policy, preprocessor, postproce
             )
             yield mb, batch, traj, vpos, weights
 
-    # Pass A: OLD (round-start policy) + REF (fixed base) log-probs, no grad, batched
+    # Pass A: verify rescoring reproduces collection log-prob (first chunk),
+    # then reuse the collection-time OLD log-probs (they are exactly the
+    # round-start policy's log-probs when the guard passes); always recompute
+    # the REF (fixed base) log-probs per chunk for the KL anchor.
     old_logps = []
     ref_logps = []
     with torch.no_grad(), sde_sampling.rollout_autocast("cuda"):
+        checked_old = False
         for mb, batch, traj, vpos, weights in make_minibatches():
-            pm, pc = sde_sampling.prepare_policy_prefix(policy, batch)
-            old_lp = sde_sampling.recompute_log_probs(policy.model, pm, pc, traj, valid_positions=vpos)
-            drift = (old_lp.detach() - mb[0]["stored_old"]).abs().max().item()
-            if drift > RATIO_TOLERANCE:
-                msg = (
-                    f"rescored old logp drifts {drift:.4f} nats from the collection-time "
-                    "log-prob of the same chunk; collection and rescoring are on different "
-                    "numeric paths (both sides must use rollout_autocast and identical "
-                    "input dtypes, and rescoring must be per chunk)."
-                )
-                if TRAIN_DEBUG:
-                    print(f"[train][debug] {msg}", flush=True)
-                    print("[train][debug] old     ", old_lp.detach().cpu().tolist(), flush=True)
-                    print("[train][debug] stored  ", mb[0]["stored_old"].cpu().tolist(), flush=True)
-                else:
-                    raise RuntimeError(msg)
+            if not checked_old:
+                checked_old = True
+                pm, pc = sde_sampling.prepare_policy_prefix(policy, batch)
+                old_lp = sde_sampling.recompute_log_probs(policy.model, pm, pc, traj, valid_positions=vpos)
+                drift = (old_lp.detach() - mb[0]["stored_old"]).abs().max().item()
+                if drift > RATIO_TOLERANCE:
+                    msg = (
+                        f"rescored old logp drifts {drift:.4f} nats from the collection-time "
+                        "log-prob of the same chunk; collection and rescoring are on different "
+                        "numeric paths (both sides must use rollout_autocast and identical "
+                        "input dtypes, and rescoring must be per chunk)."
+                    )
+                    if TRAIN_DEBUG:
+                        print(f"[train][debug] {msg}", flush=True)
+                        print("[train][debug] old     ", old_lp.detach().cpu().tolist(), flush=True)
+                        print("[train][debug] stored  ", mb[0]["stored_old"].cpu().tolist(), flush=True)
+                    else:
+                        raise RuntimeError(msg)
             pmr, pcr = sde_sampling.prepare_policy_prefix(ref, batch)
             ref_lp = sde_sampling.recompute_log_probs(ref.model, pmr, pcr, traj, valid_positions=vpos)
-            old_logps.append(old_lp.detach())
+            old_logps.append(mb[0]["stored_old"].detach())
             ref_logps.append(ref_lp.detach())
 
     # Passes B: gradient steps
