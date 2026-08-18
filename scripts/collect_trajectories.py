@@ -32,10 +32,13 @@ def main() -> None:
     ap.add_argument("--task-id", type=int, default=0)
     ap.add_argument("--rollout-n", type=int, default=4)
     ap.add_argument("--groups", type=int, default=1)
-    ap.add_argument("--eta", type=float, default=0.1)
+    ap.add_argument("--eta", type=float, default=0.05,
+                    help="SDE noise; keep small so the trained policy transfers to deterministic ODE eval")
     ap.add_argument("--max-steps", type=int, default=280)
     ap.add_argument("--action-steps", type=int, default=5)
     ap.add_argument("--chunk-size", type=int, default=10)
+    ap.add_argument("--init-state-id", type=int, default=0,
+                    help="LIBERO initial-state index shared by every episode in the group (reset-matched GRPO)")
     ap.add_argument("--seed", type=int, default=20260816)
     ap.add_argument("--out", default="work/trajectories/traj.pkl")
     args = ap.parse_args()
@@ -71,14 +74,18 @@ def main() -> None:
                         camera_name_mapping={"agentview_image": "camera1", "robot0_eye_in_hand_image": "camera2"})
     envs = make_env(env_cfg, n_envs=1)
     env = envs[args.suite][0]
+    # underlying LiberoEnv (VectorEnv wrapper: env.envs[0].unwrapped)
+    base_env = env.envs[0].unwrapped
     env_pre, _ = make_env_pre_post_processors(env_cfg, policy.config)
     log("env ready")
 
     action_dim = int(policy.config.output_features["action"].shape[0])
     max_steps = min(SUITE_MAX_STEPS[args.suite], args.max_steps)
 
-    def collect_episode(seed: int):
-        torch.manual_seed(seed)
+    def collect_episode(seed: int, policy_seed: int):
+        torch.manual_seed(policy_seed)
+        # pin the initial state so every episode in a group is reset-matched
+        base_env.init_state_id = args.init_state_id
         obs, _ = env.reset(seed=seed)
         chunks = []
         total = 0
@@ -108,8 +115,8 @@ def main() -> None:
                     success = bool(info.get("is_success", False)) if isinstance(info, dict) else False
                 if success or bool(np.asarray(truncated).any()):
                     break
-            batch_cpu = {k: (v.half().cpu() if k.startswith("observation.images") else v.cpu())
-                         for k, v in batch.items() if isinstance(v, torch.Tensor)}
+            # full precision: rescoring must reproduce the collection path
+            batch_cpu = {k: v.cpu() for k, v in batch.items() if isinstance(v, torch.Tensor)}
             chunks.append((batch_cpu, traj.to("cpu"), valid.cpu()))
             if total % 40 == 0:
                 log(f"ep(seed={seed}) step {total}/{max_steps} chunks={len(chunks)}")
@@ -119,7 +126,7 @@ def main() -> None:
     for g in range(args.groups):
         group_seed = args.seed + g * 1000
         log(f"=== group {g}: collecting {args.rollout_n} episodes (seed base {group_seed}) ===")
-        eps = [collect_episode(group_seed + i) for i in range(args.rollout_n)]
+        eps = [collect_episode(group_seed, group_seed + i * 7919) for i in range(args.rollout_n)]
         rewards = torch.tensor([[float(e["success"]) for e in eps]], dtype=torch.float32)
         advs = grpo.compute_group_advantages(rewards)[0].tolist()
         for e, adv in zip(eps, advs):

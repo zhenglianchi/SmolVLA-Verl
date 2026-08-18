@@ -20,10 +20,12 @@ for r in $(seq 1 "$ROUNDS"); do
       [ "$i" -ge "$INSTANCES" ] && break
       task=${TASKS[$(( (r*INSTANCES + i) % 10 ))]}
       seed=$((20260816 + r*10000 + i*7))
+      init_state=$(( (r + i) % 10 ))
       "$PY" scripts/collect_remote.py \
         --server "$SERVER" --suite libero_spatial --task-id "$task" \
         --rollout-n 4 --group-id "r${r}_g${i}" --session-id "r${r}_s${i}" \
-        --eta 0.1 --max-steps 280 --action-steps 5 --seed "$seed" \
+        --eta 0.05 --max-steps 280 --action-steps 5 --seed "$seed" \
+        --init-state-id "$init_state" \
         > "work/logs/round${r}_i${i}.log" 2>&1 &
       PIDS+=($!)
     done

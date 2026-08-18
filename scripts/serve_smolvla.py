@@ -61,6 +61,9 @@ class FinishRequest(BaseModel):
     episode_id: int
     group_id: str
     success: bool
+    # chunk_id -> number of actions actually executed in that chunk; lets the
+    # server mask planned-but-unexecuted suffix actions of the terminal chunk
+    executed_steps: dict[str, int] | None = None
 
 
 def _decode_img(b64: str) -> np.ndarray:
@@ -139,8 +142,9 @@ def predict(req: PredictRequest):
     n_exec = min(ACTION_STEPS, CHUNK_SIZE)
 
     # record the chunk (obs batch CPU + SDE trajectory) for later training
-    batch_cpu = {k: (v.half().cpu() if k.startswith("observation.images") else v.cpu())
-                 for k, v in batch.items() if isinstance(v, torch.Tensor)}
+    # store images at full precision: rescoring must reproduce the collection
+    # numeric path bit-for-bit (half-precision storage silently breaks ratio=1)
+    batch_cpu = {k: v.cpu() for k, v in batch.items() if isinstance(v, torch.Tensor)}
     with SESSIONS_LOCK:
         SESSIONS.setdefault(req.session_id, {})[req.episode_id] = SESSIONS.get(req.session_id, {}).get(
             req.episode_id, {"group_id": req.group_id, "chunks": {}}
@@ -171,6 +175,19 @@ def finish(req: FinishRequest):
         ep = sess.get(req.episode_id)
         if ep is None:
             return {"status": "episode not found"}
+        if req.executed_steps:
+            for cid_str, n_exec in req.executed_steps.items():
+                ch = ep["chunks"].get(int(cid_str))
+                if ch is None:
+                    continue
+                n_exec = min(int(n_exec), CHUNK_SIZE)
+                if n_exec < ch["n_exec"]:
+                    # mask the planned-but-never-executed suffix of the terminal chunk
+                    vp = np.frombuffer(base64.b64decode(ch["valid_positions"]), dtype=np.bool_).copy()
+                    vp = vp.reshape(1, CHUNK_SIZE)
+                    vp[0, n_exec:] = False
+                    ch["valid_positions"] = _tob64(torch.from_numpy(vp))
+                    ch["n_exec"] = n_exec
         ep["success"] = req.success
         ep["steps"] = len(ep["chunks"]) * ACTION_STEPS
         GROUP_RESULTS.setdefault(req.group_id, {})[req.episode_id] = req.success
@@ -178,13 +195,15 @@ def finish(req: FinishRequest):
 
 
 @app.post("/train")
-def train(lr: float = 1e-6, steps: int = 1, clip_epsilon: float = 0.2, kl_beta: float = 0.01, batch_size: int = 1):
+def train(lr: float = 1e-6, steps: int = 1, clip_epsilon: float = 0.2, kl_beta: float = 0.01,
+          batch_size: int = 1, chunk_discount: float = 0.99):
     """Run one or more offline GRPO steps on recorded sessions, then save weights."""
     from smolvla_verl.trainer.grpo_offline import train_from_sessions
 
-    train_from_sessions(SESSIONS, GROUP_RESULTS, POLICY, PREPROCESSOR, POSTPROCESSOR, SAVE_DIR, CHECKPOINT, CHUNK_SIZE,
-                        lr=lr, clip_epsilon=clip_epsilon, kl_beta=kl_beta, steps=steps, batch_size=batch_size)
-    return {"status": "trained"}
+    result = train_from_sessions(SESSIONS, GROUP_RESULTS, POLICY, PREPROCESSOR, POSTPROCESSOR, SAVE_DIR, CHECKPOINT, CHUNK_SIZE,
+                                 lr=lr, clip_epsilon=clip_epsilon, kl_beta=kl_beta, steps=steps, batch_size=batch_size,
+                                 chunk_discount=chunk_discount)
+    return result
 
 
 @app.post("/reload")

@@ -61,6 +61,11 @@ def main() -> None:
 
     policy = load_policy(args.checkpoint, chunk_size)
     ref = load_policy(args.checkpoint, chunk_size, freeze=True)
+    from lerobot.policies.factory import make_pre_post_processors
+
+    preprocessor, postprocessor = make_pre_post_processors(
+        policy.config, pretrained_path=args.checkpoint
+    )
     trainable = [p for p in policy.model.parameters() if p.requires_grad]
     optim = torch.optim.AdamW(trainable, lr=args.lr)
     print(f"[offline] trainable={sum(p.numel() for p in trainable)/1e6:.2f}M "
@@ -78,6 +83,13 @@ def main() -> None:
         pm, pc = sde_sampling.prepare_policy_prefix(pol, batch)
         return sde_sampling.recompute_log_probs(pol.model, pm, pc, traj, valid_positions=valid)
 
+    # collapsed groups (all-same outcome) carry zero advantage and no signal;
+    # drop them so the objective is not dominated by the KL-to-base term.
+    episodes = [ep for ep in episodes if float(ep.get("advantage", 0.0)) != 0.0]
+    if not episodes:
+        raise RuntimeError("no mixed-group episodes with non-zero advantage; nothing to train on")
+    episode_weights = [1.0 / (len(episodes) * max(len(ep["chunks"]), 1)) for ep in episodes]
+
     for rnd in range(start, args.rounds):
         t_r = time.time()
         print(f"\n=== offline round {rnd}/{args.rounds} ===", flush=True)
@@ -85,7 +97,7 @@ def main() -> None:
         ratio_acc = 0.0
         nchunks = 0
         for epoch in range(args.epochs_per_round):
-            for ep in episodes:
+            for ep, ep_weight in zip(episodes, episode_weights):
                 adv = ep["advantage"]
                 for batch_cpu, traj, valid in ep["chunks"]:
                     traj = traj.to("cuda")
@@ -102,6 +114,7 @@ def main() -> None:
                     loss, metrics = grpo.grpo_loss(
                         logp, old_per_step, ref_logp, adv_t,
                         clip_epsilon=args.clip_epsilon, kl_beta=args.kl_beta,
+                        sample_weights=torch.tensor([ep_weight], device=logp.device, dtype=logp.dtype),
                     )
                     loss.backward()
                     total_loss += float(loss.detach().cpu())
@@ -110,19 +123,21 @@ def main() -> None:
                     if rnd == 0 and epoch == 0 and nchunks == 1:
                         drift = abs(float(metrics["ratio_mean"].cpu()) - 1.0)
                         if drift > RATIO_TOLERANCE:
-                            print(f"[offline] WARNING first-forward ratio_mean={float(metrics['ratio_mean'].cpu()):.4f} "
-                                  f"(local 0.6.0 vs server 0.4.4 drift {drift:.4f})", flush=True)
+                            raise RuntimeError(
+                                f"first-forward ratio_mean={float(metrics['ratio_mean'].cpu()):.4f} "
+                                f"drifts {drift:.4f} from 1.0; collection and rescoring are on "
+                                "different numeric paths (both sides must use rollout_autocast "
+                                "and identical input dtypes)."
+                            )
         torch.nn.utils.clip_grad_norm_(trainable, 1.0)
         optim.step()
         optim.zero_grad()
         print(f"[offline] chunks={nchunks} loss={total_loss:.4f} ratio_mean={ratio_acc/max(nchunks,1):.4f} "
               f"time={time.time()-t_r:.0f}s", flush=True)
         policy.save_pretrained(str(save_dir))
-    if preprocessor is not None:
-        preprocessor.save_pretrained(str(save_dir))
-    if postprocessor is not None:
-        postprocessor.save_pretrained(str(save_dir))
-        print(f"[offline] weights -> {save_dir} (overwrite)", flush=True)
+    preprocessor.save_pretrained(str(save_dir))
+    postprocessor.save_pretrained(str(save_dir))
+    print(f"[offline] weights -> {save_dir} (overwrite)", flush=True)
     print("OFFLINE_TRAIN_DONE", flush=True)
 
 
@@ -160,7 +175,7 @@ def _stack_batches(batches, max_lang=None):
 
 def train_from_sessions(sessions, group_results, policy, preprocessor, postprocessor, save_dir, checkpoint, chunk_size,
                         lr=1e-6, clip_epsilon=0.2, kl_beta=0.01, epochs=1, rounds=1,
-                        steps=1, batch_size=16):
+                        steps=1, batch_size=16, chunk_discount=0.99):
     """Train GRPO on server-recorded sessions (called by /train).
 
     Numeric-consistency design (verl-style) + STABLE reference anchor:
@@ -173,6 +188,12 @@ def train_from_sessions(sessions, group_results, policy, preprocessor, postproce
         policy; ratio = exp(new - old); KL = k3(new, ref_base). ``steps``
         gradient steps total.
     Batching is safe because old/new/ref all share the same batched path.
+
+    Only mixed groups (within-group success differs) carry a learning signal
+    and are trained on. Each chunk is weighted episode-balanced (``1/(E*C)``)
+    times a reward-to-go discount ``chunk_discount**(C-1-c)`` so that long
+    failed episodes no longer dominate the objective and credit concentrates
+    near the terminal chunk.
     """
     from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 
@@ -189,31 +210,49 @@ def train_from_sessions(sessions, group_results, policy, preprocessor, postproce
     trainable = [pp for pp in policy.model.parameters() if pp.requires_grad]
     optim = torch.optim.AdamW(trainable, lr=lr)
 
-    # assemble episodes with advantages
+    # assemble episodes with advantages; keep only mixed (reset-matched) groups
     episodes = []
     for sid, eps in sessions.items():
         for ep_id, ep in eps.items():
-            gid = ep.get("group_id")
             episodes.append(ep)
-    for gid, results in group_results.items():
+    mixed_groups = set()
+    for gid in group_results:
         eps_in_group = [ep for ep in episodes if ep.get("group_id") == gid]
         if len(eps_in_group) >= 2:
-            rewards = torch.tensor([[float(ep.get("success", False)) for ep in eps_in_group]], dtype=torch.float32)
+            successes = [float(ep.get("success", False)) for ep in eps_in_group]
+            if all(s == successes[0] for s in successes):
+                # collapsed group: all-same outcome -> zero advantage and no
+                # signal; including it would only apply the KL-to-base term.
+                continue
+            mixed_groups.add(gid)
+            rewards = torch.tensor([successes], dtype=torch.float32)
             advs = grpo.compute_group_advantages(rewards)[0].tolist()
             for ep, adv in zip(eps_in_group, advs):
                 ep["advantage"] = float(adv)
-        else:
-            for ep in eps_in_group:
-                ep["advantage"] = 0.0
 
-    # decode all chunks once (hold on GPU)
+    selected = [ep for ep in episodes if ep.get("group_id") in mixed_groups and "advantage" in ep]
+    n_episodes = len(selected)
+    if n_episodes == 0:
+        print("[train] no mixed groups in this round; skipping update", flush=True)
+        return {"status": "trained", "skipped": "no mixed groups", "chunks": 0}
+
+    # decode all chunks once (hold on GPU); episode-balanced x reward-to-go weights
+    num_steps = int(policy.config.num_steps)
+    max_action_dim = int(policy.config.max_action_dim)
     items = []
-    for ep in episodes:
+    for ep in selected:
         adv = ep.get("advantage", 0.0)
-        for cid, ch in ep["chunks"].items():
+        chunk_ids = sorted(int(cid) for cid in ep["chunks"].keys())
+        n_chunks = len(chunk_ids)
+        for cpos, cid in enumerate(chunk_ids):
+            ch = ep["chunks"][cid]
             batch = {k: (v.cuda() if isinstance(v, torch.Tensor) else v) for k, v in ch["batch"].items()}
-            states = torch.from_numpy(np.frombuffer(base64.b64decode(ch["states"]), dtype=np.float32).copy()).reshape(-1, 11, chunk_size, 32)
-            vmask = torch.from_numpy(np.frombuffer(base64.b64decode(ch["valid_action_mask"]), dtype=np.bool_).copy()).reshape(-1, chunk_size, 32)
+            states = torch.from_numpy(np.frombuffer(base64.b64decode(ch["states"]), dtype=np.float32).copy()).reshape(
+                -1, num_steps + 1, chunk_size, max_action_dim
+            )
+            vmask = torch.from_numpy(np.frombuffer(base64.b64decode(ch["valid_action_mask"]), dtype=np.bool_).copy()).reshape(
+                -1, chunk_size, max_action_dim
+            )
             vpos = torch.from_numpy(np.frombuffer(base64.b64decode(ch["valid_positions"]), dtype=np.bool_).copy()).reshape(-1, chunk_size)
             items.append({
                 "batch": batch,
@@ -222,9 +261,11 @@ def train_from_sessions(sessions, group_results, policy, preprocessor, postproce
                 "vpos": vpos.cuda(),
                 "adv": float(adv),
                 "eta": float(ch["eta"]),
+                "weight": float(chunk_discount) ** (n_chunks - 1 - cpos) / (n_episodes * n_chunks),
             })
     nchunks_total = len(items)
-    print(f"[train] decoded {nchunks_total} chunks, steps={steps} batch_size={batch_size} lr={lr} ref=base", flush=True)
+    print(f"[train] decoded {nchunks_total} chunks from {n_episodes} mixed-group episodes, "
+          f"steps={steps} batch_size={batch_size} lr={lr} ref=base chunk_discount={chunk_discount}", flush=True)
     if nchunks_total == 0:
         raise RuntimeError("no recorded chunks to train on")
 
@@ -235,16 +276,17 @@ def train_from_sessions(sessions, group_results, policy, preprocessor, postproce
             states = torch.cat([x["states"] for x in mb], dim=0)
             vmask = torch.cat([x["vmask"] for x in mb], dim=0)
             vpos = torch.cat([x["vpos"] for x in mb], dim=0)
+            weights = torch.tensor([x["weight"] for x in mb], dtype=torch.float32, device=states.device)
             traj = sde_sampling.SmolVLATrajectory(
                 states=states, element_log_probs=states.new_zeros((0,)), valid_action_mask=vmask, eta=mb[0]["eta"]
             )
-            yield mb, batch, traj, vpos
+            yield mb, batch, traj, vpos, weights
 
     # Pass A: OLD (round-start policy) + REF (fixed base) log-probs, no grad, batched
     old_logps = []
     ref_logps = []
     with torch.no_grad(), sde_sampling.rollout_autocast("cuda"):
-        for mb, batch, traj, vpos in make_minibatches():
+        for mb, batch, traj, vpos, weights in make_minibatches():
             pm, pc = sde_sampling.prepare_policy_prefix(policy, batch)
             old_lp = sde_sampling.recompute_log_probs(policy.model, pm, pc, traj, valid_positions=vpos)
             pmr, pcr = sde_sampling.prepare_policy_prefix(ref, batch)
@@ -253,11 +295,12 @@ def train_from_sessions(sessions, group_results, policy, preprocessor, postproce
             ref_logps.append(ref_lp.detach())
 
     # Passes B: gradient steps
+    checked_ratio = False
     for step_idx in range(steps):
         total_loss = 0.0
         ratio_acc = 0.0
         nchunks = 0
-        for (mb, batch, traj, vpos), old_lp, ref_lp in zip(make_minibatches(), old_logps, ref_logps):
+        for (mb, batch, traj, vpos, weights), old_lp, ref_lp in zip(make_minibatches(), old_logps, ref_logps):
             B = len(mb)
             adv_t = torch.tensor([x["adv"] for x in mb], dtype=torch.float32, device="cuda")
             with sde_sampling.rollout_autocast("cuda"):
@@ -268,7 +311,18 @@ def train_from_sessions(sessions, group_results, policy, preprocessor, postproce
             old_per_step = old_lp.unsqueeze(1)
             ref_logp = ref_lp.unsqueeze(1)
             loss, metrics = grpo.grpo_loss(logp, old_per_step, ref_logp, adv_t,
-                                           clip_epsilon=clip_epsilon, kl_beta=kl_beta)
+                                           clip_epsilon=clip_epsilon, kl_beta=kl_beta,
+                                           sample_weights=weights)
+            if not checked_ratio:
+                checked_ratio = True
+                drift = abs(float(metrics["ratio_mean"].cpu()) - 1.0)
+                if drift > RATIO_TOLERANCE:
+                    raise RuntimeError(
+                        f"first-forward ratio_mean={float(metrics['ratio_mean'].cpu()):.4f} "
+                        f"drifts {drift:.4f} from 1.0; collection and rescoring are on "
+                        "different numeric paths (images must stay float32, both sides must "
+                        "use rollout_autocast)."
+                    )
             loss.backward()
             total_loss += float(loss.detach().cpu()) * B
             ratio_acc += float(metrics["ratio_mean"].cpu()) * B
@@ -287,4 +341,9 @@ def train_from_sessions(sessions, group_results, policy, preprocessor, postproce
     if postprocessor is not None:
         postprocessor.save_pretrained(str(save_dir))
     print(f"[train] weights saved -> {save_dir} (overwrite)", flush=True)
-    return {"chunks": nchunks_total, "loss": total_loss, "ratio_mean": ratio_acc / max(nchunks, 1)}
+    return {
+        "status": "trained",
+        "chunks": nchunks_total,
+        "loss": total_loss,
+        "ratio_mean": ratio_acc / max(nchunks, 1),
+    }

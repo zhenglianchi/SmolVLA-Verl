@@ -28,17 +28,19 @@ for r in $(seq "$START_ROUND" "$ROUNDS"); do
   for i in $(seq 0 $((INSTANCES-1))); do
     task=${TASKS[$(( (r*INSTANCES + i) % 10 ))]}
     seed=$((20260901 + r*10000 + i*7))
+    init_state=$(( (r + i) % 10 ))
     "$LOCAL_PYTHON" scripts/collect_remote.py \
       --server "$SERVER" --suite libero_spatial --task-id "$task" \
       --rollout-n 4 --group-id "r${r}_g${i}" --session-id "r${r}_s${i}" \
-      --eta 0.1 --max-steps 280 --action-steps 5 --seed "$seed" \
+      --eta 0.05 --max-steps 280 --action-steps 5 --seed "$seed" \
+      --init-state-id "$init_state" \
       > "work/logs/opt_r${r}_i${i}.log" 2>&1 &
     PIDS+=($!)
   done
   for pid in "${PIDS[@]}"; do wait "$pid"; done
   n_ok=$(grep -hac "success=True" work/logs/opt_r${r}_i*.log | awk '{s+=$1} END{print s+0}')
   echo "  round $r success rate: $n_ok / $((INSTANCES*4)) = $(awk "BEGIN{printf \"%.1f\", $n_ok*100/($INSTANCES*4)}")%"
-  TRAIN_RESP=$(curl -s -X POST "$SERVER/train?lr=$GRPO_LR&steps=$GRPO_STEPS&batch_size=$BATCH_SIZE")
+  TRAIN_RESP=$(curl -s -X POST "$SERVER/train?lr=$GRPO_LR&steps=$GRPO_STEPS&batch_size=$BATCH_SIZE&chunk_discount=0.99")
   if [[ "$TRAIN_RESP" != *trained* ]]; then
     echo "  ERROR: /train failed: $TRAIN_RESP"
     exit 1

@@ -12,7 +12,8 @@ cd "$(dirname "$0")/.."
   --checkpoint "${CHECKPOINT:-/root/vla_libero/models/smolvla_libero}" \
   --suite libero_spatial --task-id "${TASK_ID:-0}" \
   --rollout-n "${ROLLOUT_N:-4}" --groups "${GROUPS:-1}" \
-  --eta "${ETA:-0.1}" --max-steps "${MAX_STEPS:-280}" \
+  --eta "${ETA:-0.05}" --max-steps "${MAX_STEPS:-280}" \
   --action-steps "${ACTION_STEPS:-5}" --chunk-size "${CHUNK_SIZE:-10}" \
+  --init-state-id "${INIT_STATE_ID:-0}" \
   --seed "${SEED:-20260816}" \
   --out "${OUT:-work/trajectories/traj.pkl}"

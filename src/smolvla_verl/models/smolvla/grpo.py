@@ -54,12 +54,18 @@ def grpo_loss(
     clip_epsilon: float,
     kl_beta: float,
     valid_steps: Tensor | None = None,
+    sample_weights: Tensor | None = None,
 ) -> tuple[Tensor, dict[str, Tensor]]:
     """Compute per-denoise-step clipped GRPO plus in-loss reference KL.
 
     ``logp`` has shape ``(episodes, control_chunks, denoise_steps)``. One scalar
     episode advantage is broadcast across both inner axes. There is no
     transition probability between adjacent control chunks.
+
+    ``sample_weights`` (optional, shape ``(episodes,)``) reweights each episode
+    inside the mean. It is used for episode-balanced chunk weighting (failed
+    episodes are longer and otherwise dominate the objective) combined with an
+    optional reward-to-go chunk discount.
     """
     if logp.ndim != 3:
         raise ValueError("logp must have shape (episodes, chunks, denoise_steps)")
@@ -69,6 +75,10 @@ def grpo_loss(
         raise ValueError("advantages must contain one scalar per episode")
     if clip_epsilon < 0 or kl_beta < 0:
         raise ValueError("clip_epsilon and kl_beta must be non-negative")
+    if sample_weights is not None and sample_weights.shape != (logp.shape[0],):
+        raise ValueError(
+            f"sample_weights must have shape {(logp.shape[0],)}, got {tuple(sample_weights.shape)}"
+        )
 
     if valid_steps is None:
         valid = torch.ones_like(logp, dtype=torch.bool)
@@ -78,17 +88,24 @@ def grpo_loss(
         except RuntimeError as exc:
             raise ValueError("valid_steps is not broadcastable to logp") from exc
     valid_f = valid.float()
-    denominator = valid_f.sum().clamp_min(1.0)
+    if sample_weights is None:
+        sample_w = torch.ones_like(valid_f[:, :1, :1])
+    else:
+        sample_w = sample_weights.detach().to(
+            device=logp.device, dtype=torch.float32
+        )[:, None, None]
+    weighted_valid = valid_f * sample_w
+    denominator = weighted_valid.sum().clamp_min(1.0)
 
     log_ratio = (logp.float() - old_logp.detach().float()).clamp(-20.0, 20.0)
     ratio = torch.exp(log_ratio)
     advantage = advantages.detach().float()[:, None, None]
     unclipped = ratio * advantage
     clipped = torch.clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * advantage
-    pg_loss = -(torch.minimum(unclipped, clipped) * valid_f).sum() / denominator
+    pg_loss = -(torch.minimum(unclipped, clipped) * weighted_valid).sum() / denominator
 
     kl = k3_kl_estimate(logp, ref_logp)
-    kl_loss = (kl * valid_f).sum() / denominator
+    kl_loss = (kl * weighted_valid).sum() / denominator
     loss = pg_loss + float(kl_beta) * kl_loss
     if not torch.isfinite(loss):
         zero = torch.zeros_like(loss)
@@ -99,8 +116,8 @@ def grpo_loss(
         "loss": loss.detach(),
         "pg_loss": pg_loss.detach(),
         "kl": kl_loss.detach(),
-        "ratio_mean": (ratio.detach() * valid_f).sum() / denominator,
-        "clip_fraction": (((ratio - 1.0).abs() > clip_epsilon).float() * valid_f).sum()
+        "ratio_mean": (ratio.detach() * weighted_valid).sum() / denominator,
+        "clip_fraction": (((ratio - 1.0).abs() > clip_epsilon).float() * weighted_valid).sum()
         / denominator,
         "advantage_mean": advantages.detach().float().mean(),
         "advantage_std": advantages.detach().float().std(unbiased=False),

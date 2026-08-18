@@ -11,6 +11,18 @@ Key options:
   --num-runners N      parallel rollout worker processes (each: env + model copy)
   --save-dir DIR       single weights folder, overwritten every round (resume-safe)
   --resume             reload latest weights from save-dir if present
+
+Fixes over the initial implementation:
+  * the environment's real task description is used for every episode (no
+    hardcoded instruction), and tasks rotate across rounds/groups;
+  * every episode inside a GRPO group restores the SAME initial state
+    (``LiberoEnv.init_state_id``) so the group baseline is reset-matched;
+  * rollout workers are recreated every round with the latest saved weights
+    (on-policy rollout), instead of being pinned to the base checkpoint;
+  * ``pool.map`` runs all episodes of a round in parallel (not one at a time);
+  * collapsed groups (all-success / all-failure) are skipped entirely;
+  * chunks are weighted episode-balanced and a reward-to-go discount
+    (--chunk-discount) concentrates credit near the terminal chunk.
 """
 from __future__ import annotations
 
@@ -23,18 +35,18 @@ import numpy as np
 import torch
 from multiprocessing import Pool, set_start_method
 
-# keep the worker imports light
 from smolvla_verl.models.smolvla import SmolVLATrainableModel
 from smolvla_verl.models.smolvla.grpo import compute_group_advantages, grpo_loss
 
 SUITE_MAX_STEPS = {"libero_spatial": 280, "libero_object": 280, "libero_goal": 300, "libero_10": 520}
-TASK_DESC = "place the bowl on the plate"
+RATIO_TOLERANCE = 0.05
+
 
 # --------------------------------------------------------------------------- #
 # rollout worker (process): own env + own frozen model copy
 # --------------------------------------------------------------------------- #
 class RolloutWorker:
-    def __init__(self, checkpoint, suite, task_id, env_cfg, eta, max_steps, action_steps, action_dim, chunk_size, seed_base):
+    def __init__(self, checkpoint, suite, env_cfg, eta, max_steps, action_steps, action_dim, chunk_size):
         os.environ.setdefault("MUJOCO_GL", "egl")
         os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
@@ -42,7 +54,8 @@ class RolloutWorker:
         self.max_steps = max_steps
         self.action_dim = action_dim
         self._action_steps = action_steps
-        self.seed_base = seed_base
+        self._suite = suite
+        self._env_cfg = env_cfg
 
         from lerobot.envs.configs import LiberoEnv
         from lerobot.envs.factory import make_env, make_env_pre_post_processors
@@ -51,7 +64,6 @@ class RolloutWorker:
         from verl_vla.workers.config.model import VLAModelConfig
 
         self.preprocess_observation = preprocess_observation
-        self._env_cfg = env_cfg
         self._LiberoEnv = LiberoEnv
         self._make_env = make_env
         self._make_env_pre_post_processors = make_env_pre_post_processors
@@ -60,48 +72,57 @@ class RolloutWorker:
         self.model = build_vla_model(cfg, torch_dtype=torch.bfloat16).to("cuda")
         self.model.policy.config.chunk_size = chunk_size
         self.model.eval()
-        self.envs = None
-        self.env = None
-        self.env_preprocessor = None
+        self._envs = {}
+        self._base_envs = {}
+        self._env_preprocessors = {}
 
-    def _ensure_env(self):
-        if self.env is None:
-            from lerobot.envs.configs import LiberoEnv
-            env_cfg = LiberoEnv(
-                task=self._env_cfg["task"],
-                task_ids=[self._env_cfg["task_id"]],
+    def _ensure_env(self, task_id):
+        if task_id not in self._envs:
+            env_cfg = self._LiberoEnv(
+                task=self._suite,
+                task_ids=[task_id],
                 camera_name_mapping=self._env_cfg["camera_name_mapping"],
             )
             envs = self._make_env(env_cfg, n_envs=1)
-            self.env = envs[env_cfg.task][0]
-            self.env_preprocessor, _ = self._make_env_pre_post_processors(env_cfg, self.model.policy.config)
+            self._envs[task_id] = envs[env_cfg.task][0]
+            self._base_envs[task_id] = envs[env_cfg.task][0].envs[0].unwrapped
+            self._env_preprocessors[task_id], _ = self._make_env_pre_post_processors(
+                env_cfg, self.model.policy.config
+            )
+        return self._envs[task_id], self._env_preprocessors[task_id]
 
-    def collect_episode(self, seed: int):
-        self._ensure_env()
+    def collect_episode(self, task_id, init_state_id, env_seed, policy_seed):
         from verl import DataProto
-        torch.manual_seed(seed)
-        obs, _ = self.env.reset(seed=seed)
+
+        env, env_preprocessor = self._ensure_env(task_id)
+        base_env = self._base_envs[task_id]
+        torch.manual_seed(policy_seed)
+        # lerobot LiberoEnv advances init_state_id on every reset; pin it so all
+        # episodes of a group restore the SAME initial state (reset-matched).
+        base_env.init_state_id = init_state_id
+        obs, _ = env.reset(seed=env_seed)
+        task_desc = np.asarray(list(env.call("task_description")))
         chunks = []
         total_steps = 0
         success = False
         max_steps = self.max_steps
         while total_steps < max_steps and not success:
             policy_obs = self.preprocess_observation(obs)
-            policy_obs["task"] = list(self.env.call("task_description"))
-            policy_obs = self.env_preprocessor(policy_obs)
+            policy_obs["task"] = task_desc
+            policy_obs = env_preprocessor(policy_obs)
             data = {k: v for k, v in policy_obs.items() if k.startswith("observation.")}
-            data["task"] = np.asarray([TASK_DESC])
+            data["task"] = task_desc
             dp = DataProto.from_single_dict(data)
             with self.model.rollout_context():
                 traj = self.model.sample_sde_chunk(dp, eta=self.eta)
-            actions = traj.actions[:, :, :self.action_dim]
+            actions = traj.actions[:, :, : self.action_dim]
             # unnormalize (MEAN_STD) before feeding the environment
             actions = self.model.postprocessor(actions)
             horizon = min(self._action_steps, max_steps - total_steps)
             valid_positions = torch.zeros((1, self.model.policy.config.chunk_size), dtype=torch.bool)
             for position in range(horizon):
                 a = actions[:, position].detach().cpu().numpy()
-                obs, reward, terminated, truncated, info = self.env.step(a)
+                obs, reward, terminated, truncated, info = env.step(a)
                 valid_positions[0, position] = True
                 total_steps += 1
                 final_info = info.get("final_info")
@@ -114,19 +135,21 @@ class RolloutWorker:
             chunks.append((dp.to("cpu"), traj.to("cpu"), valid_positions.cpu()))
         return {"success": success, "steps": total_steps, "chunks": chunks}
 
-    def collect_episode_task(self, group_seed: int, ep_index: int):
+    def collect_episode_task(self, task_id, init_state_id, env_seed, policy_seed):
         """One episode within a reset-matched group."""
-        return self.collect_episode(self.seed_base + group_seed * 97 + ep_index)
+        return self.collect_episode(task_id, init_state_id, env_seed, policy_seed)
 
 
-def _worker_init(checkpoint, suite, task_id, env_cfg, eta, max_steps, action_steps, action_dim, chunk_size, seed_base):
+def _worker_init(checkpoint, suite, env_cfg, eta, max_steps, action_steps, action_dim, chunk_size):
     global _WORKER
-    _WORKER = RolloutWorker(checkpoint, suite, task_id, env_cfg, eta, max_steps, action_steps, action_dim, chunk_size, seed_base)
+    _WORKER = RolloutWorker(
+        checkpoint, suite, env_cfg, eta, max_steps, action_steps, action_dim, chunk_size
+    )
 
 
 def _collect_one_episode(args):
-    group_seed, ep_index = args
-    return _WORKER.collect_episode_task(group_seed, ep_index)
+    task_id, init_state_id, env_seed, policy_seed = args
+    return _WORKER.collect_episode_task(task_id, init_state_id, env_seed, policy_seed)
 
 
 # --------------------------------------------------------------------------- #
@@ -135,6 +158,7 @@ def _collect_one_episode(args):
 def build_trainable(checkpoint, chunk_size):
     from verl_vla.models import build_vla_model
     from verl_vla.workers.config.model import VLAModelConfig
+
     cfg = VLAModelConfig(path=checkpoint, use_shm=False)
     model = build_vla_model(cfg, torch_dtype=torch.bfloat16).to("cuda")
     model.policy.config.chunk_size = chunk_size
@@ -145,6 +169,7 @@ def build_trainable(checkpoint, chunk_size):
 def build_reference(checkpoint, chunk_size):
     from verl_vla.models import build_vla_model
     from verl_vla.workers.config.model import VLAModelConfig
+
     cfg = VLAModelConfig(path=checkpoint, use_shm=False)
     ref = build_vla_model(cfg, torch_dtype=torch.bfloat16).to("cuda")
     ref.policy.config.chunk_size = chunk_size
@@ -166,15 +191,26 @@ def main() -> None:
     ap.add_argument("--max-steps", type=int, default=280)
     ap.add_argument("--action-steps", type=int, default=1, help="chunk actions executed per sample (1 = FlowVLA-RL semantics; >1 cuts sampling/rescoring cost)")
     ap.add_argument("--chunk-size", type=int, default=50)
-    ap.add_argument("--eta", type=float, default=0.4)
+    ap.add_argument("--eta", type=float, default=0.05)
     ap.add_argument("--lr", type=float, default=1e-6)
     ap.add_argument("--clip-epsilon", type=float, default=0.2)
     ap.add_argument("--kl-beta", type=float, default=0.01)
+    ap.add_argument("--chunk-discount", type=float, default=0.99,
+                    help="reward-to-go discount across chunks of one episode, (0,1]")
+    ap.add_argument("--init-state-count", type=int, default=10,
+                    help="rotate training initial states across 0..N-1 to match eval coverage")
     ap.add_argument("--seed", type=int, default=20260816)
     ap.add_argument("--save-dir", default="/root/runs/smolvla_grpo")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--eval-after", action="store_true", help="evaluate after each round (uses scripts/eval)")
     args = ap.parse_args()
+    if not 0.0 < args.chunk_discount <= 1.0:
+        ap.error("--chunk-discount must lie in (0, 1]")
+    if args.init_state_count <= 0:
+        ap.error("--init-state-count must be positive")
+    task_ids = [int(t.strip()) for t in args.task_ids.split(",") if t.strip()]
+    if not task_ids:
+        ap.error("--task-ids must contain at least one task id")
 
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -194,56 +230,98 @@ def main() -> None:
 
     env_cfg = {
         "task": args.suite,
-        "task_id": int(args.task_ids.split(",")[0]),
         "camera_name_mapping": {"agentview_image": "camera1", "robot0_eye_in_hand_image": "camera2"},
     }
     action_dim = int(model.policy.config.output_features["action"].shape[0])
+    max_steps = min(SUITE_MAX_STEPS[args.suite], args.max_steps)
 
-    pool = None
+    def _current_checkpoint() -> str:
+        return str(save_dir) if (save_dir / "model.safetensors").exists() else args.checkpoint
+
     if args.num_runners > 1:
         set_start_method("spawn", force=True)
-        pool = Pool(
-            args.num_runners,
-            initializer=_worker_init,
-            initargs=(args.checkpoint, args.suite, env_cfg["task_id"], env_cfg, args.eta,
-                      min(SUITE_MAX_STEPS[args.suite], args.max_steps), args.action_steps, action_dim, args.chunk_size, args.seed),
-        )
 
-    def _collect(task):
+    pool = None
+
+    def _make_pool(checkpoint: str):
+        nonlocal pool
         if pool is not None:
-            return pool.map(_collect_one_episode, [task])[0]
-        _worker_init(args.checkpoint, args.suite, env_cfg["task_id"], env_cfg, args.eta,
-                     min(SUITE_MAX_STEPS[args.suite], args.max_steps), args.action_steps, action_dim, args.chunk_size, args.seed)
-        return _collect_one_episode(task)
+            pool.close()
+            pool.join()
+            pool = None
+        if args.num_runners > 1:
+            pool = Pool(
+                args.num_runners,
+                initializer=_worker_init,
+                initargs=(checkpoint, args.suite, env_cfg, args.eta,
+                          max_steps, args.action_steps, action_dim, args.chunk_size),
+            )
+
+    def _run_tasks(tasks):
+        if pool is not None:
+            return pool.map(_collect_one_episode, tasks)
+        _worker_init(_current_checkpoint(), args.suite, env_cfg, args.eta,
+                     max_steps, args.action_steps, action_dim, args.chunk_size)
+        return [_collect_one_episode(task) for task in tasks]
 
     for rnd in range(start_round, args.rounds):
         t_r = time.time()
         print(f"\n=== round {rnd}/{args.rounds} ===", flush=True)
-        group_seeds = [rnd * 1000 + g for g in range(args.groups_per_round)]
-        tasks = [(gs, i) for gs in group_seeds for i in range(args.rollout_n)]
-        results = [_collect(task) for task in tasks]
-        # regroup by group_seed and compute reset-matched advantages
-        grouped = {gs: [] for gs in group_seeds}
-        for task, ep in zip(tasks, results):
-            grouped[task[0]].append(ep)
-        for gs, eps in grouped.items():
-            rewards = torch.tensor([[float(e["success"]) for e in eps]], dtype=torch.float32)
+        # recreate the pool with the latest weights: on-policy rollout
+        _make_pool(_current_checkpoint())
+
+        # tasks rotate across tasks AND initial states; every episode of a group
+        # shares (task, init_state_id, env_seed) and only the policy noise seed
+        # differs, so the GRPO group is reset-matched.
+        tasks = []
+        for g in range(args.groups_per_round):
+            task_id = task_ids[(rnd * args.groups_per_round + g) % len(task_ids)]
+            init_state_id = (rnd + g) % args.init_state_count
+            env_seed = args.seed + rnd * 1000 + g
+            for i in range(args.rollout_n):
+                policy_seed = args.seed + 100_000 + rnd * 1000 + g * args.rollout_n + i
+                tasks.append((task_id, init_state_id, env_seed, policy_seed))
+        results = _run_tasks(tasks)
+
+        # regroup by group and compute reset-matched advantages (mixed groups only)
+        grouped = {g: [] for g in range(args.groups_per_round)}
+        for g in range(args.groups_per_round):
+            grouped[g] = results[g * args.rollout_n : (g + 1) * args.rollout_n]
+        episodes = []
+        for g, eps in grouped.items():
+            successes = [float(e["success"]) for e in eps]
+            if all(s == successes[0] for s in successes):
+                # collapsed group: no within-group signal; skip entirely
+                continue
+            rewards = torch.tensor([successes], dtype=torch.float32)
             advs = compute_group_advantages(rewards)[0].tolist()
             for e, adv in zip(eps, advs):
                 e["advantage"] = float(adv)
-        episodes = [e for eps in grouped.values() for e in eps]
+            episodes.extend(eps)
         n_ok = sum(1 for e in episodes if e["success"])
-        print(f"[rollout] episodes={len(episodes)} success={n_ok}/{len(episodes)} "
-              f"({100.0*n_ok/len(episodes):.1f}%) time={time.time()-t_r:.0f}s", flush=True)
+        print(f"[rollout] mixed episodes={len(episodes)} success={n_ok}/{len(episodes)} "
+              f"({100.0 * n_ok / max(len(episodes), 1):.1f}%) time={time.time()-t_r:.0f}s", flush=True)
+        if not episodes:
+            print("[rollout] all groups collapsed; skipping update this round", flush=True)
+            model.save_pretrained(str(save_dir))
+            if pool is not None:
+                pool.close()
+                pool.join()
+                pool = None
+            continue
 
         # rescore + GRPO loss on main GPU
         ref.to("cuda")
         total_loss = 0.0
         ratio_acc = 0.0
         nchunks = 0
+        checked_ratio = False
+        n_episodes = max(len(episodes), 1)
         for e in episodes:
             adv = e["advantage"]
-            for dp, traj, valid_positions in e["chunks"]:
+            n_chunks = len(e["chunks"])
+            ep_weight = 1.0 / (n_episodes * n_chunks)
+            for cpos, (dp, traj, valid_positions) in enumerate(e["chunks"]):
                 dp = dp.to("cuda")
                 traj = traj.to("cuda")
                 with torch.no_grad(), model.rollout_context():
@@ -254,11 +332,22 @@ def main() -> None:
                         traj.element_log_probs * traj.valid_action_mask[:, None].float()
                         * valid_positions.to(traj.states.device)[None, ..., None].float()
                     ).sum(dim=(-1, -2)).unsqueeze(1)
-                adv_t = torch.tensor([adv], device=logp.device, dtype=logp.dtype)
+                chunk_adv = adv * (args.chunk_discount ** (n_chunks - 1 - cpos))
+                adv_t = torch.tensor([chunk_adv], device=logp.device, dtype=logp.dtype)
                 loss, metrics = grpo_loss(
                     logp, old_per_step, ref_per_step.to(logp.device), adv_t,
                     clip_epsilon=args.clip_epsilon, kl_beta=args.kl_beta,
+                    sample_weights=torch.tensor([ep_weight], device=logp.device, dtype=logp.dtype),
                 )
+                if not checked_ratio:
+                    checked_ratio = True
+                    drift = abs(float(metrics["ratio_mean"].cpu()) - 1.0)
+                    if drift > RATIO_TOLERANCE:
+                        raise RuntimeError(
+                            f"first-forward ratio_mean={float(metrics['ratio_mean'].cpu()):.4f} "
+                            f"drifts {drift:.4f} from 1.0; collection and rescoring are on "
+                            "different numeric paths (both sides must use rollout_autocast)."
+                        )
                 loss.backward()
                 total_loss += float(loss.detach().cpu())
                 ratio_acc += float(metrics["ratio_mean"].cpu())
@@ -274,6 +363,10 @@ def main() -> None:
         # save single weights folder (overwrite)
         model.save_pretrained(str(save_dir))
         print(f"[save] weights -> {save_dir} (overwrite)", flush=True)
+        if pool is not None:
+            pool.close()
+            pool.join()
+            pool = None
 
     if pool is not None:
         pool.close()
