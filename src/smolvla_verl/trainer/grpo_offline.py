@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import argparse
+import os
 import pickle
 import sys
 import time
@@ -23,6 +24,7 @@ import grpo  # noqa: E402
 import sde_sampling  # noqa: E402
 
 RATIO_TOLERANCE = 0.05
+TRAIN_DEBUG = os.environ.get("SMOLVLA_TRAIN_DEBUG") == "1"
 
 
 def load_policy(checkpoint, chunk_size, freeze=False):
@@ -308,12 +310,18 @@ def train_from_sessions(sessions, group_results, policy, preprocessor, postproce
             old_lp = sde_sampling.recompute_log_probs(policy.model, pm, pc, traj, valid_positions=vpos)
             drift = (old_lp.detach() - mb[0]["stored_old"]).abs().max().item()
             if drift > RATIO_TOLERANCE:
-                raise RuntimeError(
+                msg = (
                     f"rescored old logp drifts {drift:.4f} nats from the collection-time "
                     "log-prob of the same chunk; collection and rescoring are on different "
                     "numeric paths (both sides must use rollout_autocast and identical "
                     "input dtypes, and rescoring must be per chunk)."
                 )
+                if TRAIN_DEBUG:
+                    print(f"[train][debug] {msg}", flush=True)
+                    print("[train][debug] old     ", old_lp.detach().cpu().tolist(), flush=True)
+                    print("[train][debug] stored  ", mb[0]["stored_old"].cpu().tolist(), flush=True)
+                else:
+                    raise RuntimeError(msg)
             pmr, pcr = sde_sampling.prepare_policy_prefix(ref, batch)
             ref_lp = sde_sampling.recompute_log_probs(ref.model, pmr, pcr, traj, valid_positions=vpos)
             old_logps.append(old_lp.detach())
@@ -342,12 +350,20 @@ def train_from_sessions(sessions, group_results, policy, preprocessor, postproce
                 checked_ratio = True
                 drift = abs(float(metrics["ratio_mean"].cpu()) - 1.0)
                 if drift > RATIO_TOLERANCE:
-                    raise RuntimeError(
+                    msg = (
                         f"first-forward ratio_mean={float(metrics['ratio_mean'].cpu()):.4f} "
                         f"drifts {drift:.4f} from 1.0; collection and rescoring are on "
                         "different numeric paths (images must stay float32, both sides must "
                         "use rollout_autocast)."
                     )
+                    if TRAIN_DEBUG:
+                        print(f"[train][debug] {msg}", flush=True)
+                        print("[train][debug] logp", logp.detach().cpu().tolist(), flush=True)
+                        print("[train][debug] old ", old_per_step.detach().cpu().tolist(), flush=True)
+                        print("[train][debug] ref ", ref_logp.detach().cpu().tolist(), flush=True)
+                        print("[train][debug] stored", mb[0]["stored_old"].cpu().tolist(), flush=True)
+                    else:
+                        raise RuntimeError(msg)
             loss.backward()
             total_loss += float(loss.detach().cpu()) * B
             ratio_acc += float(metrics["ratio_mean"].cpu()) * B
