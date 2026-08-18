@@ -215,13 +215,17 @@ def main() -> None:
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     start_round = 0
-    if args.resume and (save_dir / "model.safetensors").exists():
-        # weights already in save_dir; trainer will load them as the base for this run
+    resumed_weights = args.resume and (save_dir / "model.safetensors").exists()
+    if resumed_weights:
+        # weights already in save_dir; continue from them
         start_round = 1
         print(f"[resume] weights found in {save_dir}, starting at round {start_round}")
 
     t0 = time.time()
-    model = build_trainable(args.checkpoint, args.chunk_size)
+    # the learner must start from the SAME weights the first rollout round uses:
+    # saved weights when resuming, otherwise the base checkpoint
+    learner_start = str(save_dir) if resumed_weights else args.checkpoint
+    model = build_trainable(learner_start, args.chunk_size)
     ref = build_reference(args.checkpoint, args.chunk_size)
     trainable = [p for p in model.parameters() if p.requires_grad]
     optim = torch.optim.AdamW(trainable, lr=args.lr)
@@ -235,8 +239,12 @@ def main() -> None:
     action_dim = int(model.policy.config.output_features["action"].shape[0])
     max_steps = min(SUITE_MAX_STEPS[args.suite], args.max_steps)
 
-    def _current_checkpoint() -> str:
-        return str(save_dir) if (save_dir / "model.safetensors").exists() else args.checkpoint
+    def _worker_checkpoint(rnd: int) -> str:
+        # round 0 of a fresh run rolls out with the base checkpoint; every later
+        # round rolls out with the weights saved at the end of the previous round
+        if rnd > 0 or resumed_weights:
+            return str(save_dir)
+        return args.checkpoint
 
     if args.num_runners > 1:
         set_start_method("spawn", force=True)
@@ -257,10 +265,10 @@ def main() -> None:
                           max_steps, args.action_steps, action_dim, args.chunk_size),
             )
 
-    def _run_tasks(tasks):
+    def _run_tasks(tasks, rnd):
         if pool is not None:
             return pool.map(_collect_one_episode, tasks)
-        _worker_init(_current_checkpoint(), args.suite, env_cfg, args.eta,
+        _worker_init(_worker_checkpoint(rnd), args.suite, env_cfg, args.eta,
                      max_steps, args.action_steps, action_dim, args.chunk_size)
         return [_collect_one_episode(task) for task in tasks]
 
@@ -268,7 +276,7 @@ def main() -> None:
         t_r = time.time()
         print(f"\n=== round {rnd}/{args.rounds} ===", flush=True)
         # recreate the pool with the latest weights: on-policy rollout
-        _make_pool(_current_checkpoint())
+        _make_pool(_worker_checkpoint(rnd))
 
         # tasks rotate across tasks AND initial states; every episode of a group
         # shares (task, init_state_id, env_seed) and only the policy noise seed
@@ -281,7 +289,7 @@ def main() -> None:
             for i in range(args.rollout_n):
                 policy_seed = args.seed + 100_000 + rnd * 1000 + g * args.rollout_n + i
                 tasks.append((task_id, init_state_id, env_seed, policy_seed))
-        results = _run_tasks(tasks)
+        results = _run_tasks(tasks, rnd)
 
         # regroup by group and compute reset-matched advantages (mixed groups only)
         grouped = {g: [] for g in range(args.groups_per_round)}
