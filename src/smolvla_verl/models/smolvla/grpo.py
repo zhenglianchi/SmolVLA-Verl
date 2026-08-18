@@ -95,7 +95,12 @@ def grpo_loss(
             device=logp.device, dtype=torch.float32
         )[:, None, None]
     weighted_valid = valid_f * sample_w
-    denominator = weighted_valid.sum().clamp_min(1.0)
+    # NOTE: with per-sample (episode-balanced) weights the weighted sum is far
+    # below 1 (e.g. 0.01-0.3 per chunk), so a floor of 1.0 would silently
+    # inflate the loss/gradient by ~1/sum(w) AND corrupt the ratio_mean metric
+    # (this was the "first-forward ratio drifts" false alarm). Only guard
+    # against an exactly-zero denominator.
+    denominator = weighted_valid.sum().clamp_min(1e-12)
 
     log_ratio = (logp.float() - old_logp.detach().float()).clamp(-20.0, 20.0)
     ratio = torch.exp(log_ratio)
