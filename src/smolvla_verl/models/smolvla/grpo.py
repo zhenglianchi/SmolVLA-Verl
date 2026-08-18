@@ -41,7 +41,7 @@ def k3_kl_estimate(logp: Tensor, ref_logp: Tensor) -> Tensor:
     With ``log_ratio = log p_ref - log p_policy``, k3 is
     ``exp(log_ratio) - log_ratio - 1``.
     """
-    log_ratio = ref_logp.detach().float() - logp.float()
+    log_ratio = (ref_logp.detach().float() - logp.float()).clamp(-10.0, 10.0)
     return torch.exp(log_ratio) - log_ratio - 1.0
 
 
@@ -90,6 +90,11 @@ def grpo_loss(
     kl = k3_kl_estimate(logp, ref_logp)
     kl_loss = (kl * valid_f).sum() / denominator
     loss = pg_loss + float(kl_beta) * kl_loss
+    if not torch.isfinite(loss):
+        zero = torch.zeros_like(loss)
+        metrics = {k: zero.detach() for k in (
+            "loss", "pg_loss", "kl", "ratio_mean", "clip_fraction", "advantage_mean", "advantage_std")}
+        return zero, metrics
     metrics = {
         "loss": loss.detach(),
         "pg_loss": pg_loss.detach(),

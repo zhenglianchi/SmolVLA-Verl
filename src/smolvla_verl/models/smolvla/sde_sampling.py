@@ -24,7 +24,10 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor, nn
 
-from .sde import gaussian_log_prob, marginal_preserving_transition, sample_transition
+try:
+    from .sde import gaussian_log_prob, marginal_preserving_transition, sample_transition
+except ImportError:  # standalone use (local collector without the verl package)
+    from sde import gaussian_log_prob, marginal_preserving_transition, sample_transition
 
 __all__ = [
     "ROLLOUT_AUTOCAST_DTYPE",

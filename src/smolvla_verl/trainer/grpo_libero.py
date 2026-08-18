@@ -34,13 +34,14 @@ TASK_DESC = "place the bowl on the plate"
 # rollout worker (process): own env + own frozen model copy
 # --------------------------------------------------------------------------- #
 class RolloutWorker:
-    def __init__(self, checkpoint, suite, task_id, env_cfg, eta, max_steps, action_dim, chunk_size, seed_base):
+    def __init__(self, checkpoint, suite, task_id, env_cfg, eta, max_steps, action_steps, action_dim, chunk_size, seed_base):
         os.environ.setdefault("MUJOCO_GL", "egl")
         os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
         self.eta = eta
         self.max_steps = max_steps
         self.action_dim = action_dim
+        self._action_steps = action_steps
         self.seed_base = seed_base
 
         from lerobot.envs.configs import LiberoEnv
@@ -94,7 +95,9 @@ class RolloutWorker:
             with self.model.rollout_context():
                 traj = self.model.sample_sde_chunk(dp, eta=self.eta)
             actions = traj.actions[:, :, :self.action_dim]
-            horizon = min(self.model.policy.config.n_action_steps, max_steps - total_steps)
+            # unnormalize (MEAN_STD) before feeding the environment
+            actions = self.model.postprocessor(actions)
+            horizon = min(self._action_steps, max_steps - total_steps)
             valid_positions = torch.zeros((1, self.model.policy.config.chunk_size), dtype=torch.bool)
             for position in range(horizon):
                 a = actions[:, position].detach().cpu().numpy()
@@ -111,26 +114,19 @@ class RolloutWorker:
             chunks.append((dp.to("cpu"), traj.to("cpu"), valid_positions.cpu()))
         return {"success": success, "steps": total_steps, "chunks": chunks}
 
-    def collect_group(self, group_seed: int):
-        """One reset-matched group: G episodes from the same initial scene."""
-        episodes = []
-        for i in range(self._group_size):
-            episodes.append(self.collect_episode(self.seed_base + group_seed * 97 + i))
-        rewards = torch.tensor([[float(e["success"]) for e in episodes]], dtype=torch.float32)
-        advs = compute_group_advantages(rewards)[0].tolist()
-        for e, adv in zip(episodes, advs):
-            e["advantage"] = float(adv)
-        return episodes
+    def collect_episode_task(self, group_seed: int, ep_index: int):
+        """One episode within a reset-matched group."""
+        return self.collect_episode(self.seed_base + group_seed * 97 + ep_index)
 
 
-def _worker_init(checkpoint, suite, task_id, env_cfg, eta, max_steps, action_dim, chunk_size, seed_base, group_size):
+def _worker_init(checkpoint, suite, task_id, env_cfg, eta, max_steps, action_steps, action_dim, chunk_size, seed_base):
     global _WORKER
-    _WORKER = RolloutWorker(checkpoint, suite, task_id, env_cfg, eta, max_steps, action_dim, chunk_size, seed_base)
-    _WORKER._group_size = group_size
+    _WORKER = RolloutWorker(checkpoint, suite, task_id, env_cfg, eta, max_steps, action_steps, action_dim, chunk_size, seed_base)
 
 
-def _collect_one_group(args):
-    return _WORKER.collect_group(args)
+def _collect_one_episode(args):
+    group_seed, ep_index = args
+    return _WORKER.collect_episode_task(group_seed, ep_index)
 
 
 # --------------------------------------------------------------------------- #
@@ -168,6 +164,7 @@ def main() -> None:
     ap.add_argument("--rounds", type=int, default=10, help="RL training rounds")
     ap.add_argument("--num-runners", type=int, default=4, help="parallel rollout worker processes")
     ap.add_argument("--max-steps", type=int, default=280)
+    ap.add_argument("--action-steps", type=int, default=1, help="chunk actions executed per sample (1 = FlowVLA-RL semantics; >1 cuts sampling/rescoring cost)")
     ap.add_argument("--chunk-size", type=int, default=50)
     ap.add_argument("--eta", type=float, default=0.4)
     ap.add_argument("--lr", type=float, default=1e-6)
@@ -202,20 +199,39 @@ def main() -> None:
     }
     action_dim = int(model.policy.config.output_features["action"].shape[0])
 
-    set_start_method("spawn", force=True)
-    pool = Pool(
-        args.num_runners,
-        initializer=_worker_init,
-        initargs=(args.checkpoint, args.suite, env_cfg["task_id"], env_cfg, args.eta,
-                  min(SUITE_MAX_STEPS[args.suite], args.max_steps), action_dim, args.chunk_size, args.seed, args.rollout_n),
-    )
+    pool = None
+    if args.num_runners > 1:
+        set_start_method("spawn", force=True)
+        pool = Pool(
+            args.num_runners,
+            initializer=_worker_init,
+            initargs=(args.checkpoint, args.suite, env_cfg["task_id"], env_cfg, args.eta,
+                      min(SUITE_MAX_STEPS[args.suite], args.max_steps), args.action_steps, action_dim, args.chunk_size, args.seed),
+        )
 
-    for rnd in range(start_round, args.rounds + 1):
+    def _collect(task):
+        if pool is not None:
+            return pool.map(_collect_one_episode, [task])[0]
+        _worker_init(args.checkpoint, args.suite, env_cfg["task_id"], env_cfg, args.eta,
+                     min(SUITE_MAX_STEPS[args.suite], args.max_steps), args.action_steps, action_dim, args.chunk_size, args.seed)
+        return _collect_one_episode(task)
+
+    for rnd in range(start_round, args.rounds):
         t_r = time.time()
         print(f"\n=== round {rnd}/{args.rounds} ===", flush=True)
         group_seeds = [rnd * 1000 + g for g in range(args.groups_per_round)]
-        results = pool.map(_collect_one_group, group_seeds)
-        episodes = [e for group in results for e in group]
+        tasks = [(gs, i) for gs in group_seeds for i in range(args.rollout_n)]
+        results = [_collect(task) for task in tasks]
+        # regroup by group_seed and compute reset-matched advantages
+        grouped = {gs: [] for gs in group_seeds}
+        for task, ep in zip(tasks, results):
+            grouped[task[0]].append(ep)
+        for gs, eps in grouped.items():
+            rewards = torch.tensor([[float(e["success"]) for e in eps]], dtype=torch.float32)
+            advs = compute_group_advantages(rewards)[0].tolist()
+            for e, adv in zip(eps, advs):
+                e["advantage"] = float(adv)
+        episodes = [e for eps in grouped.values() for e in eps]
         n_ok = sum(1 for e in episodes if e["success"])
         print(f"[rollout] episodes={len(episodes)} success={n_ok}/{len(episodes)} "
               f"({100.0*n_ok/len(episodes):.1f}%) time={time.time()-t_r:.0f}s", flush=True)
@@ -259,8 +275,9 @@ def main() -> None:
         model.save_pretrained(str(save_dir))
         print(f"[save] weights -> {save_dir} (overwrite)", flush=True)
 
-    pool.close()
-    pool.join()
+    if pool is not None:
+        pool.close()
+        pool.join()
     print("TRAIN_DONE")
 
 

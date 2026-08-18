@@ -4,6 +4,7 @@ set -xeuo pipefail
 export MUJOCO_GL=egl
 export HF_ENDPOINT=https://hf-mirror.com
 export HF_HUB_DISABLE_XET=1
+export HF_HUB_DOWNLOAD_TIMEOUT=300
 ENV=${VLA_ENV:-/home/ubuntu/vla_verl}
 POLICY=${POLICY:-/home/ubuntu/runs/smolvla_grpo}
 TASK=${TASK:-libero_spatial}
