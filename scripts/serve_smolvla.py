@@ -241,6 +241,7 @@ def dump_sessions():
     import pickle
 
     out_path = Path(SAVE_DIR) / "session_dump.pkl"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     with SESSIONS_LOCK:
         with open(out_path, "wb") as f:
             pickle.dump(

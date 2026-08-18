@@ -254,24 +254,41 @@ def train_from_sessions(sessions, group_results, policy, preprocessor, postproce
                 -1, chunk_size, max_action_dim
             )
             vpos = torch.from_numpy(np.frombuffer(base64.b64decode(ch["valid_positions"]), dtype=np.bool_).copy()).reshape(-1, chunk_size)
+            elp = torch.from_numpy(np.frombuffer(base64.b64decode(ch["element_log_probs"]), dtype=np.float32).copy()).reshape(
+                -1, num_steps, chunk_size, max_action_dim
+            )
+            # collection-time per-step log-prob (the invariant rescoring must
+            # reproduce: Pass A recomputes it under the round-start policy)
+            stored_old = (
+                elp.float() * vmask.unsqueeze(1).float() * vpos[:, None, :, None].float()
+            ).sum(dim=(-1, -2))
             items.append({
                 "batch": batch,
                 "states": states.cuda(),
                 "vmask": vmask.cuda(),
                 "vpos": vpos.cuda(),
+                "stored_old": stored_old.cuda(),
                 "adv": float(adv),
                 "eta": float(ch["eta"]),
                 "weight": float(chunk_discount) ** (n_chunks - 1 - cpos) / (n_episodes * n_chunks),
             })
     nchunks_total = len(items)
     print(f"[train] decoded {nchunks_total} chunks from {n_episodes} mixed-group episodes, "
-          f"steps={steps} batch_size={batch_size} lr={lr} ref=base chunk_discount={chunk_discount}", flush=True)
+          f"steps={steps} lr={lr} ref=base chunk_discount={chunk_discount} "
+          f"(batch_size forced to 1: batched rescoring corrupts logp, see docs)", flush=True)
     if nchunks_total == 0:
         raise RuntimeError("no recorded chunks to train on")
 
     def make_minibatches():
-        for i in range(0, nchunks_total, batch_size):
-            mb = items[i:i + batch_size]
+        # CRITICAL: one chunk per minibatch. Batching chunks with different
+        # prefix caches / padded language changes the batched attention and the
+        # rescored logp drifts from the collection-time per-chunk logp (measured
+        # ratio 0.5-1.65 for 4-chunk batches). Both Pass A and Pass B would be
+        # wrong in the SAME way so the ratio guard cannot catch it, silently
+        # corrupting the objective. Rescoring per chunk matches collection
+        # bit-for-bit (verified ratio == 1.0 exactly).
+        for i in range(nchunks_total):
+            mb = items[i:i + 1]
             batch = _stack_batches([x["batch"] for x in mb])
             states = torch.cat([x["states"] for x in mb], dim=0)
             vmask = torch.cat([x["vmask"] for x in mb], dim=0)
@@ -289,6 +306,14 @@ def train_from_sessions(sessions, group_results, policy, preprocessor, postproce
         for mb, batch, traj, vpos, weights in make_minibatches():
             pm, pc = sde_sampling.prepare_policy_prefix(policy, batch)
             old_lp = sde_sampling.recompute_log_probs(policy.model, pm, pc, traj, valid_positions=vpos)
+            drift = (old_lp.detach() - mb[0]["stored_old"]).abs().max().item()
+            if drift > RATIO_TOLERANCE:
+                raise RuntimeError(
+                    f"rescored old logp drifts {drift:.4f} nats from the collection-time "
+                    "log-prob of the same chunk; collection and rescoring are on different "
+                    "numeric paths (both sides must use rollout_autocast and identical "
+                    "input dtypes, and rescoring must be per chunk)."
+                )
             pmr, pcr = sde_sampling.prepare_policy_prefix(ref, batch)
             ref_lp = sde_sampling.recompute_log_probs(ref.model, pmr, pcr, traj, valid_positions=vpos)
             old_logps.append(old_lp.detach())
