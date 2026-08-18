@@ -20,6 +20,26 @@ import torch
 SUITE_MAX_STEPS = {"libero_spatial": 280, "libero_object": 280, "libero_goal": 300, "libero_10": 520}
 
 
+def _success_from_step(final_info, info) -> bool:
+    """Robust success detection for dict/list/array ``final_info`` layouts."""
+    if final_info is not None:
+        if isinstance(final_info, dict):
+            if final_info.get("is_success", False):
+                return True
+        else:
+            try:
+                first = final_info[0]
+            except (KeyError, IndexError, TypeError):
+                first = None
+            if first is not None:
+                if isinstance(first, dict):
+                    return bool(first.get("is_success", False))
+                return bool(first)
+    if isinstance(info, dict):
+        return bool(info.get("is_success", False))
+    return False
+
+
 def _post(url: str, payload: dict, timeout=120) -> dict:
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
@@ -103,10 +123,7 @@ def main() -> None:
                 n_exec += 1
                 total += 1
                 final_info = info.get("final_info") if isinstance(info, dict) else None
-                if final_info is not None and final_info[0] is not None:
-                    success = bool(final_info[0].get("is_success", False))
-                else:
-                    success = bool(info.get("is_success", False)) if isinstance(info, dict) else False
+                success = _success_from_step(final_info, info)
                 if success or bool(np.asarray(truncated).any()):
                     break
             executed_steps[chunk_id] = n_exec

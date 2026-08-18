@@ -42,6 +42,26 @@ SUITE_MAX_STEPS = {"libero_spatial": 280, "libero_object": 280, "libero_goal": 3
 RATIO_TOLERANCE = 0.05
 
 
+def _success_from_step(final_info, info) -> bool:
+    """Robust success detection for dict/list/array ``final_info`` layouts."""
+    if final_info is not None:
+        if isinstance(final_info, dict):
+            if final_info.get("is_success", False):
+                return True
+        else:
+            try:
+                first = final_info[0]
+            except (KeyError, IndexError, TypeError):
+                first = None
+            if first is not None:
+                if isinstance(first, dict):
+                    return bool(first.get("is_success", False))
+                return bool(first)
+    if isinstance(info, dict):
+        return bool(info.get("is_success", False))
+    return False
+
+
 # --------------------------------------------------------------------------- #
 # rollout worker (process): own env + own frozen model copy
 # --------------------------------------------------------------------------- #
@@ -125,11 +145,8 @@ class RolloutWorker:
                 obs, reward, terminated, truncated, info = env.step(a)
                 valid_positions[0, position] = True
                 total_steps += 1
-                final_info = info.get("final_info")
-                if final_info is not None and final_info[0] is not None:
-                    success = bool(final_info[0].get("is_success", False))
-                else:
-                    success = bool(info.get("is_success", False))
+                final_info = info.get("final_info") if isinstance(info, dict) else None
+                success = _success_from_step(final_info, info)
                 if success or bool(np.asarray(truncated).any()):
                     break
             chunks.append((dp.to("cpu"), traj.to("cpu"), valid_positions.cpu()))
