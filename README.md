@@ -33,12 +33,15 @@
 
 如果你是想学习 VLA 的 RL 训练，按这个顺序看：
 
-1. [docs/learning-verl-vla.md](docs/learning-verl-vla.md) —— verl-vla 框架导读 + 本项目怎么接入 SmolVLA
-2. [docs/architecture.md](docs/architecture.md) —— 平台架构与 FlowGRPO 算法
-3. `verl-vla/src/verl_vla/models/smolvla/` —— 我们加的 SDE / GRPO 核心代码
-4. `src/smolvla_verl/trainer/grpo_libero.py` —— 训练主循环（采集→训练→覆盖权重）
-5. [docs/eval_protocol.md](docs/eval_protocol.md) —— 官方评测协议与实测基线
-6. [RESULTS.md](RESULTS.md) —— 完整实验数据与问题修复记录
+1. [docs/数据流与源码导读.md](docs/数据流与源码导读.md) —— **端到端数据流**（轨迹如何变成梯度）+
+   关键源码定位
+2. [docs/learning-verl-vla.md](docs/learning-verl-vla.md) —— verl-vla 框架导读 + 本项目怎么接入 SmolVLA
+3. [docs/architecture.md](docs/architecture.md) —— 平台架构与 FlowGRPO 算法
+4. [docs/修改与补丁汇总.md](docs/修改与补丁汇总.md) —— 全部修改/修复清单（排障素材）
+5. `verl-vla/src/verl_vla/models/smolvla/` —— 我们加的 SDE / GRPO 核心代码
+6. `src/smolvla_verl/trainer/grpo_libero.py` —— 训练主循环（采集→训练→覆盖权重）
+7. [docs/训练评测分析.md](docs/训练评测分析.md) + [RESULTS.md](RESULTS.md) —— 实验数据与分析
+8. [docs/简历亮点.md](docs/简历亮点.md) —— 简历/面试怎么讲
 
 ## 快速开始（服务器）
 
