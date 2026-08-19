@@ -1,0 +1,43 @@
+# Base actor config structure:
+#
+# base_actor
+# |-- strategy: actor execution backend.
+# |-- profiler: optional per-actor profiling config.
+# |-- checkpoint: actor checkpoint save/load behavior.
+# |-- optim: optimizer, scheduler, and gradient clipping config.
+# `-- fsdp_config: FSDP engine, wrapping, offload, compile, and QAT config.
+
+# Hydra configuration composition order.
+defaults:
+
+  # profiler config
+  - /actor/profiler@profiler: default
+
+  # checkpoint config
+  - /actor/checkpoint@checkpoint: default
+
+  # fsdp optimizer config
+  - /actor/optim@optim: fsdp
+
+  # fsdp engine config
+  - /actor/engine@fsdp_config: fsdp
+
+  - _self_
+
+# Actor execution strategy used by the worker engine.
+strategy: fsdp2
+
+# FSDP engine overrides used by the actor worker.
+fsdp_config:
+
+  # Model parameter dtype.
+  model_dtype: bfloat16
+
+  # Module wrapping policy for FSDP.
+  wrap_policy:
+
+    # Transformer layer classes wrapped as FSDP units for PI0.5 models.
+    transformer_layer_cls_to_wrap:
+
+      - SiglipEncoderLayer
+      - GemmaDecoderLayerWithExpert

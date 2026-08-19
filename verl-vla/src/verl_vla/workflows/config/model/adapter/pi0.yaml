@@ -1,0 +1,101 @@
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# PI0 LIBERO adapter configuration.
+
+# Hydra configuration composition order.
+defaults:
+
+  # Shared DSRL latent-noise steering configuration.
+  - /model/adapter/dsrl@dsrl: default
+
+  # Apply PI0-specific settings last.
+  - _self_
+
+
+# Select the LIBERO policy path in the model implementation.
+embodiment: libero
+
+# Optional external state/action normalization statistics JSON.
+norm_stats_path: null
+
+# Number of action steps returned to the environment by the PI0 policy adapter.
+action_chunk_size: 10
+
+# Optional critic owned by the PI0 adapter.
+critic:
+
+  # Whether this component is enabled.
+  enabled: True
+
+  # Backend selected for this component. Use cnn for the official DSRL critic
+  # structure (requires dsrl.enabled=true).
+  type: cross_attn
+
+  # Number of workers allocated to this role.
+  num: 10
+
+  # Number of attention heads in the critic.
+  head_num: 2
+
+  # Number of attention heads in the critic prefix encoder.
+  prefix_attn_heads: 8
+
+  # Embedding dimension of the critic prefix encoder.
+  prefix_embed_dim: 2048
+
+  # Input feature dimension for the critic.
+  input_dim: 2150
+
+  # Hidden-layer dimensions for the critic.
+  hidden_dims: [1024, 512, 256]
+
+  # Mapping from task identifiers to critic checkpoints.
+  task_to_critic: null
+
+  # CNN critic backend settings.
+  cnn:
+
+    # Number of Q-value heads in the critic ensemble.
+    head_num: 10
+
+    # Hidden-layer dimensions for each critic head.
+    hidden_dims: [128, 128, 128]
+
+    # Spatial size used for encoded RGB observations.
+    image_size: 64
+
+    # Output channels for each CNN encoder layer.
+    features: [32, 32, 32, 32]
+
+    # Stride for each CNN encoder layer.
+    strides: [2, 1, 1, 1]
+
+    # Output dimension of the CNN observation encoder.
+    latent_dim: 50
+
+# Whether Flow-SDE is enabled.
+flow_sde_enable: False
+
+# Flow-SDE noise level.
+flow_sde_noise_level: 0.08
+
+# Optional task-specific Flow-SDE noise levels.
+flow_sde_task_noise_level: ""
+
+# Rollout-time Flow-SDE noise scale.
+flow_sde_rollout_noise_scale: 1.0
+
+# Train-time Flow-SDE noise scale.
+flow_sde_train_noise_scale: 1.0

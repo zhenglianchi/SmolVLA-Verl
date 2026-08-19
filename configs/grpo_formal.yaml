@@ -1,14 +1,18 @@
 suite: libero_spatial
 task_ids: [0,1,2,3,4,5,6,7,8,9]
 rollout_n: 4
-groups_per_round: 8
-rounds: 10
-num_runners: 4
+instances: 12          # 12 实例并行采集，每实例 4 rollout → 48 集/轮
+rounds: 15             # 正式 run 实际 15 轮（可用 STOP_AT 控制）
+num_runners: 12
 max_steps: 280
-chunk_size: 50
-eta: 0.4
-lr: 1e-6
+chunk_size: 10
+action_steps: 5
+eta: 0.05             # 采集 SDE 噪声，与确定性 ODE 评估口径尽量一致
+lr: 5e-6
+steps: 1
+batch_size: 32
 clip_epsilon: 0.2
 kl_beta: 0.01
+chunk_discount: 0.99  # reward-to-go，credit 集中到终局 chunk
 save_dir: /home/ubuntu/runs/smolvla_grpo
 resume: true

@@ -1,0 +1,124 @@
+=== GRPO formal run log (2026-08-19): 12 instances x 4 = 48 eps/round, 15 rounds, lr=5e-6 steps=1 batch=32, chunk_discount=0.99, eta=0.05 ===
+  round 1 success rate: 30 / 48 = 62.5%
+  trained: {"status":"trained","chunks":1222,"loss":271.99991308152676,"ratio_mean":0.9999998681576474}
+  NEW BEST round 1 (30/48) -> /home/ubuntu/runs/smolvla_best
+  restarting serve with latest weights...
+SERVE_PID=12822
+SERVE_HEALTHY after 7 tries
+=== opt round 2/60 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 14:00) ===
+  round 2 success rate: 34 / 48 = 70.8%
+  trained: {"status":"trained","chunks":1256,"loss":260.11941392719746,"ratio_mean":0.9999999602793888}
+  NEW BEST round 2 (34/48) -> /home/ubuntu/runs/smolvla_best
+  restarting serve with latest weights...
+SERVE_PID=16793
+SERVE_HEALTHY after 7 tries
+=== opt round 3/60 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 14:00) ===
+  round 3 success rate: 27 / 48 = 56.2%
+  trained: {"status":"trained","chunks":1260,"loss":255.03118787705898,"ratio_mean":0.9999999876060183}
+  restarting serve with latest weights...
+SERVE_PID=22085
+SERVE_HEALTHY after 7 tries
+=== opt round 4/60 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 14:00) ===
+  round 4 success rate: 29 / 48 = 60.4%
+  trained: {"status":"trained","chunks":800,"loss":163.6507011950016,"ratio_mean":0.9999999941885471}
+  restarting serve with latest weights...
+SERVE_PID=27551
+SERVE_HEALTHY after 7 tries
+=== opt round 5/60 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 14:00) ===
+  round 5 success rate: 22 / 48 = 45.8%
+  trained: {"status":"trained","chunks":1590,"loss":310.562136888504,"ratio_mean":1.0000000008996928}
+  restarting serve with latest weights...
+SERVE_PID=34412
+SERVE_HEALTHY after 7 tries
+=== opt round 6/60 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 14:00) ===
+  round 6 success rate: 32 / 48 = 66.7%
+  trained: {"status":"trained","chunks":1219,"loss":246.93555822968483,"ratio_mean":0.9999999750139676}
+  restarting serve with latest weights...
+SERVE_PID=38541
+SERVE_HEALTHY after 7 tries
+=== opt round 7/60 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 14:00) ===
+  round 7 success rate: 33 / 48 = 68.8%
+  trained: {"status":"trained","chunks":1462,"loss":337.9293672442436,"ratio_mean":1.0000000276823213}
+  restarting serve with latest weights...
+SERVE_PID=44703
+SERVE_HEALTHY after 7 tries
+=== opt round 8/60 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 14:00) ===
+  round 8 success rate: 27 / 48 = 56.2%
+  trained: {"status":"trained","chunks":1558,"loss":331.70753778517246,"ratio_mean":1.0000000296875509}
+  restarting serve with latest weights...
+SERVE_PID=48147
+SERVE_HEALTHY after 7 tries
+=== opt round 9/60 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 14:00) ===
+  round 9 success rate: 35 / 48 = 72.9%
+  trained: {"status":"trained","chunks":1130,"loss":245.28452403843403,"ratio_mean":1.0000000519035137}
+  NEW BEST round 9 (35/48) -> /home/ubuntu/runs/smolvla_best
+  restarting serve with latest weights...
+SERVE_PID=51537
+SERVE_HEALTHY after 7 tries
+=== opt round 10/60 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 14:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+=== opt round 10/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+  round 10 success rate: 34 / 48 = 70.8%
+  trained: {"status":"trained","chunks":1256,"loss":275.0530375242233,"ratio_mean":1.0000000887900402}
+  NEW BEST round 10 (34/48) -> /home/ubuntu/runs/smolvla_best
+  restarting serve with latest weights...
+SERVE_PID=84096
+SERVE_HEALTHY after 7 tries
+=== opt round 11/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+  round 11 success rate: 31 / 48 = 64.6%
+  trained: {"status":"trained","chunks":995,"loss":245.80381225049496,"ratio_mean":1.0000000370806785}
+  restarting serve with latest weights...
+SERVE_PID=86426
+SERVE_HEALTHY after 7 tries
+=== opt round 12/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+  round 12 success rate: 27 / 48 = 56.2%
+  trained: {"status":"trained","chunks":953,"loss":183.18427282571793,"ratio_mean":0.9999998629656068}
+  restarting serve with latest weights...
+SERVE_PID=88765
+SERVE_HEALTHY after 7 tries
+=== opt round 13/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+  round 13 success rate: 32 / 48 = 66.7%
+  trained: {"status":"trained","chunks":860,"loss":158.48906987905502,"ratio_mean":0.9999999340883521}
+  restarting serve with latest weights...
+SERVE_PID=91540
+SERVE_HEALTHY after 7 tries
+=== opt round 14/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+  round 14 success rate: 23 / 48 = 47.9%
+  trained: {"status":"trained","chunks":1133,"loss":266.2478480935097,"ratio_mean":0.999999849646889}
+  restarting serve with latest weights...
+SERVE_PID=95022
+SERVE_HEALTHY after 7 tries
+=== opt round 15/15 (12 instances x 4, lr=5e-6 steps=1 batch=32, stop=2026-08-19 17:00) ===
+  round 15 success rate: 30 / 48 = 62.5%
+  trained: {"status":"trained","chunks":1241,"loss":266.3262020200491,"ratio_mean":0.9999999362648158}
+  restarting serve with latest weights...
+SERVE_PID=97725
+SERVE_HEALTHY after 7 tries
+OPT_LOOP_DONE
+
+# NOTE: 原日志尾部的自动评估段（55.0%）聚合的是旧 R16 run 的 task 目录（already done, skip），非本轮结果；
+# 本轮 15 轮正式评估见 /home/ubuntu/results/grpo_final_pertask_run2（63.0%，与 base 63.0% 持平）。

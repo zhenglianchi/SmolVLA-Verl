@@ -1,0 +1,824 @@
+<!--
+Copyright 2026 Bytedance Ltd. and/or its affiliates
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VERL-VLA Teleop Obs</title>
+  <link rel="stylesheet" href="/static/teleop.css" />
+</head>
+<body>
+  <header>
+    <strong>VERL-VLA Teleop Obs</strong>
+    <span>env: <span id="env-id">-</span></span>
+    <span>step: <span id="step">-</span></span>
+    <span>fps: <span id="fps">-</span></span>
+    <span>latency: <span id="latency">-</span></span>
+    <span>net RTT: <span id="network-rtt">-</span></span>
+    <span>ws: <span id="ws-status">connecting</span></span>
+    <span>input: <span id="input-status">connecting</span></span>
+    <span>intervention: <span id="intervention-status">off</span></span>
+    <button id="theme-toggle" class="theme-toggle" type="button">Theme: system</button>
+  </header>
+  <main>
+    <section class="panel">
+      <div class="card">
+        <div class="label">Teleop</div>
+        <div id="teleop-summary"></div>
+      </div>
+      <div id="xr-panel" class="card" style="display:none;">
+        <div class="label">XR</div>
+        <button id="xr-enter" type="button">Enter XR</button>
+        <div class="status-row"><span>status</span><span id="xr-status">idle</span></div>
+        <div class="status-row"><span>secure</span><span id="xr-secure">-</span></div>
+      </div>
+      <div class="card">
+        <div class="label">Devices</div>
+        <div id="devices-info" class="scroll-box"></div>
+      </div>
+      <div class="card">
+        <div class="label">Console</div>
+        <textarea id="console-terminal" class="console-terminal" autocomplete="off" spellcheck="false"></textarea>
+      </div>
+    </section>
+    <div class="resize-handle left" data-panel="left" title="Resize left panel"></div>
+    <section class="obs-panel">
+      <div class="obs-toolbar">
+        <button id="obs-reset-layout" type="button">Tile View</button>
+      </div>
+      <div id="image-grid"></div>
+    </section>
+    <div class="resize-handle right" data-panel="right" title="Resize right panel"></div>
+    <section class="state-panel card">
+      <div class="label">State</div>
+      <div id="state"></div>
+    </section>
+  </main>
+  <script src="/static/keyboard_event_router.js"></script>
+  <script src="/static/keyboard_device.js"></script>
+  <script src="/static/gamepad_device.js"></script>
+  <script src="/static/lerobot_device.js"></script>
+  <script src="/static/xr_renderer.js"></script>
+  <script>
+    const TELEOP_DEVICE_TYPES = __TELEOP_DEVICE_TYPES__;
+    const TELEOP_DEVICE_CONFIGS = __TELEOP_DEVICE_CONFIGS__;
+    let frames = 0;
+    let lastFpsAt = performance.now();
+    let serverClockOffsetMs = null;
+    let inputSocket = null;
+    let consoleSocket = null;
+    let xrSession = null;
+    let xrReferenceSpace = null;
+    let selectedImageName = null;
+    const imageCards = new Map();
+    const themeModes = ["system", "light", "dark"];
+    const panelWidthCfg = {
+      left: {property: "--left-panel-width", storageKey: "teleop-left-panel-width", min: 360, max: 680, fallback: 440},
+      right: {property: "--right-panel-width", storageKey: "teleop-right-panel-width", min: 300, max: 620, fallback: 390}
+    };
+    const keyboardDevice = new TeleopKeyboardDevice();
+    const gamepadDevice = new TeleopGamepadDevice(() => inputSocket);
+    const lerobotDevice = new TeleopLerobotDevice(
+      () => inputSocket,
+      () => TELEOP_DEVICE_CONFIGS.lerobot || {}
+    );
+    const keyboardRouter = new TeleopKeyboardEventRouter(() => inputSocket);
+    const xrRenderer = new TeleopXRRenderer();
+    let consoleInputStart = 0;
+    let lastConsoleEventId = 0;
+
+    if (TELEOP_DEVICE_TYPES.includes("keyboard")) {
+      keyboardRouter.register("keyboard", keyboardDevice.keyboardEventCodes());
+    }
+    if (TELEOP_DEVICE_TYPES.includes("gamepad")) {
+      keyboardRouter.register("gamepad", gamepadDevice.keyboardEventCodes());
+    }
+    if (TELEOP_DEVICE_TYPES.includes("lerobot")) {
+      keyboardRouter.register("lerobot", lerobotDevice.keyboardEventCodes());
+    }
+    if (TELEOP_DEVICE_TYPES.includes("xr_controller")) {
+      keyboardRouter.register("xr_controller", ["KeyR", "Backspace", "Enter"]);
+    }
+
+    function clearElement(element) {
+      while (element.firstChild) {
+        element.removeChild(element.firstChild);
+      }
+    }
+
+    function renderDataValue(value) {
+      if (value === null || value === undefined) {
+        const span = document.createElement("span");
+        span.className = "data-null";
+        span.textContent = String(value);
+        return span;
+      }
+      if (Array.isArray(value)) {
+        const list = document.createElement("ol");
+        list.className = "data-list";
+        for (const item of value) {
+          const row = document.createElement("li");
+          row.appendChild(renderDataValue(item));
+          list.appendChild(row);
+        }
+        return list;
+      }
+      if (typeof value === "object") {
+        const wrapper = document.createElement("div");
+        wrapper.className = "data-object";
+        for (const [key, item] of Object.entries(value)) {
+          const row = document.createElement("div");
+          const keyElement = document.createElement("div");
+          const valueElement = document.createElement("div");
+          row.className = "data-row";
+          keyElement.className = "data-key";
+          valueElement.className = "data-value";
+          keyElement.textContent = key;
+          valueElement.appendChild(renderDataValue(item));
+          row.appendChild(keyElement);
+          row.appendChild(valueElement);
+          wrapper.appendChild(row);
+        }
+        return wrapper;
+      }
+      const span = document.createElement("span");
+      span.className = "data-primitive";
+      span.textContent = String(value);
+      return span;
+    }
+
+    function renderDataInto(element, value) {
+      clearElement(element);
+      element.appendChild(renderDataValue(value));
+    }
+
+    function renderDevices(devices) {
+      const container = document.getElementById("devices-info");
+      clearElement(container);
+      if (!devices.length) {
+        container.appendChild(renderDataValue([]));
+        return;
+      }
+      for (const device of devices) {
+        const card = document.createElement("div");
+        card.className = "device-card";
+        card.appendChild(renderDataValue(device));
+        container.appendChild(card);
+      }
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function setPanelWidth(panel, width) {
+      const cfg = panelWidthCfg[panel];
+      if (!cfg) {
+        return;
+      }
+      const nextWidth = clamp(Math.round(width), cfg.min, cfg.max);
+      document.documentElement.style.setProperty(cfg.property, `${nextWidth}px`);
+      localStorage.setItem(cfg.storageKey, String(nextWidth));
+    }
+
+    function restorePanelWidths() {
+      for (const [panel, cfg] of Object.entries(panelWidthCfg)) {
+        const stored = Number(localStorage.getItem(cfg.storageKey));
+        setPanelWidth(panel, Number.isFinite(stored) && stored > 0 ? stored : cfg.fallback);
+      }
+    }
+
+    function initPanelResizers() {
+      for (const handle of document.querySelectorAll(".resize-handle")) {
+        handle.addEventListener("pointerdown", (event) => {
+          const panel = handle.dataset.panel;
+          const cfg = panelWidthCfg[panel];
+          const main = document.querySelector("main");
+          if (!cfg || !main) {
+            return;
+          }
+          event.preventDefault();
+          handle.setPointerCapture(event.pointerId);
+          const onMove = (moveEvent) => {
+            const rect = main.getBoundingClientRect();
+            const width = panel === "left"
+              ? moveEvent.clientX - rect.left - 12
+              : rect.right - moveEvent.clientX - 12;
+            setPanelWidth(panel, width);
+          };
+          const onUp = () => {
+            handle.removeEventListener("pointermove", onMove);
+            handle.removeEventListener("pointerup", onUp);
+            handle.removeEventListener("pointercancel", onUp);
+          };
+          handle.addEventListener("pointermove", onMove);
+          handle.addEventListener("pointerup", onUp);
+          handle.addEventListener("pointercancel", onUp);
+        });
+      }
+    }
+
+    function renderImage(name, blob) {
+      const imageGrid = document.getElementById("image-grid");
+      let card = imageCards.get(name);
+      let created = false;
+      if (!card) {
+        card = document.createElement("div");
+        const label = document.createElement("div");
+        const image = document.createElement("img");
+        card.className = "image-card";
+        label.className = "image-title";
+        label.textContent = name;
+        card.dataset.name = name;
+        card.appendChild(label);
+        card.appendChild(image);
+        card.addEventListener("click", () => {
+          selectImage(name);
+        });
+        imageGrid.appendChild(card);
+        imageCards.set(name, card);
+        created = true;
+      }
+      const image = card.querySelector("img");
+      const previousUrl = image.dataset.objectUrl;
+      const objectUrl = URL.createObjectURL(blob);
+      image.src = objectUrl;
+      image.dataset.objectUrl = objectUrl;
+      if (previousUrl) {
+        URL.revokeObjectURL(previousUrl);
+      }
+      return created;
+    }
+
+    function applyImageSelection() {
+      const imageGrid = document.getElementById("image-grid");
+      const obsPanel = document.querySelector(".obs-panel");
+      imageGrid.classList.toggle("has-selection", Boolean(selectedImageName));
+      obsPanel.classList.toggle("has-selection", Boolean(selectedImageName));
+      for (const [name, card] of imageCards.entries()) {
+        card.classList.toggle("selected", name === selectedImageName);
+        if (name === selectedImageName) {
+          imageGrid.prepend(card);
+        } else {
+          imageGrid.appendChild(card);
+        }
+      }
+    }
+
+    function updateImageSelection({animate = true} = {}) {
+      const imageGrid = document.getElementById("image-grid");
+      imageGrid.style.viewTransitionName = "image-grid";
+      if (animate && document.startViewTransition) {
+        imageGrid.classList.add("animating");
+        document.startViewTransition(applyImageSelection).finished.finally(() => {
+          imageGrid.classList.remove("animating");
+        });
+        return;
+      }
+      if (animate) {
+        imageGrid.classList.add("animating");
+        window.setTimeout(() => imageGrid.classList.remove("animating"), 320);
+      }
+      applyImageSelection();
+    }
+
+    function selectImage(name) {
+      if (selectedImageName === name) {
+        return;
+      }
+      selectedImageName = name;
+      updateImageSelection();
+    }
+
+    function setTheme(mode) {
+      const normalized = themeModes.includes(mode) ? mode : "system";
+      if (normalized === "system") {
+        document.documentElement.removeAttribute("data-theme");
+      } else {
+        document.documentElement.dataset.theme = normalized;
+      }
+      localStorage.setItem("teleop-theme", normalized);
+      document.getElementById("theme-toggle").textContent = `Theme: ${normalized}`;
+    }
+
+    function renderObs(obs, images) {
+      const receivedAt = Date.now();
+      if (serverClockOffsetMs !== null && Number.isFinite(obs.timestamp)) {
+        const latencyMs = receivedAt - obs.timestamp * 1000 + serverClockOffsetMs;
+        document.getElementById("latency").textContent = `${latencyMs.toFixed(1)} ms`;
+      }
+      document.getElementById("env-id").textContent = obs.env_id ?? "-";
+      document.getElementById("step").textContent = obs.step ?? "-";
+      renderDataInto(document.getElementById("state"), {
+        task_description: obs.task_description,
+        state: obs.state,
+        extra: obs.extra,
+        timestamp: obs.timestamp
+      });
+      frames += 1;
+      const now = performance.now();
+      if (now - lastFpsAt > 1000) {
+        document.getElementById("fps").textContent = frames.toString();
+        frames = 0;
+        lastFpsAt = now;
+      }
+      const imageNames = new Set(images.keys());
+      let shouldSyncImageLayout = false;
+      let firstImage = true;
+      for (const [name, blob] of images.entries()) {
+        shouldSyncImageLayout = renderImage(name, blob) || shouldSyncImageLayout;
+        if (firstImage) {
+          xrRenderer.setImage(imageCards.get(name).querySelector("img"));
+          firstImage = false;
+        }
+      }
+      for (const [name, card] of imageCards.entries()) {
+        if (!imageNames.has(name)) {
+          URL.revokeObjectURL(card.querySelector("img").dataset.objectUrl);
+          card.remove();
+          imageCards.delete(name);
+          shouldSyncImageLayout = true;
+        }
+      }
+      if (selectedImageName && !imageNames.has(selectedImageName)) {
+        selectedImageName = null;
+        shouldSyncImageLayout = true;
+      }
+      if (shouldSyncImageLayout) {
+        updateImageSelection({animate: false});
+      }
+    }
+
+    function parseBinaryObservation(buffer) {
+      if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < 4) {
+        throw new Error("invalid binary observation prefix");
+      }
+      const view = new DataView(buffer);
+      const headerLength = view.getUint32(0, false);
+      const headerStart = 4;
+      const headerEnd = headerStart + headerLength;
+      if (headerEnd > buffer.byteLength) {
+        throw new Error("invalid binary observation header length");
+      }
+      const headerBytes = new Uint8Array(buffer, headerStart, headerLength);
+      const obs = JSON.parse(new TextDecoder().decode(headerBytes));
+
+      const images = new Map();
+      let imageStart = headerEnd;
+      for (const {name, length} of obs.images) {
+        const bytes = new Uint8Array(buffer, imageStart, length);
+        images.set(name, new Blob([bytes], {type: "image/jpeg"}));
+        imageStart += length;
+      }
+      return {obs, images};
+    }
+
+    function connectObsStream() {
+      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+      const socket = new WebSocket(`${protocol}://${window.location.host}/ws/obs`);
+      socket.binaryType = "arraybuffer";
+      const status = document.getElementById("ws-status");
+
+      socket.onopen = () => {
+        status.textContent = "connected";
+        calibrateServerClock();
+      };
+      socket.onmessage = (event) => {
+        try {
+          const {obs, images} = parseBinaryObservation(event.data);
+          renderObs(obs, images);
+        } catch (error) {
+          console.error(error);
+          status.textContent = "error";
+        }
+      };
+      socket.onerror = () => {
+        status.textContent = "error";
+      };
+      socket.onclose = () => {
+        status.textContent = "reconnecting";
+        setTimeout(connectObsStream, 1000);
+      };
+    }
+
+    async function calibrateServerClock() {
+      try {
+        const requestStartedAt = Date.now();
+        const response = await fetch("/api/health", {cache: "no-store"});
+        const payload = await response.json();
+        const responseReceivedAt = Date.now();
+        serverClockOffsetMs = payload.server_time * 1000
+          - (requestStartedAt + responseReceivedAt) / 2;
+      } catch (error) {
+        console.warn("Failed to calibrate teleop server clock", error);
+      }
+    }
+
+    function startNetworkProbe() {
+      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+      const probeUrl = `${protocol}://${window.location.host}/ws/ping`;
+      const workerSource = `
+        const url = ${JSON.stringify(probeUrl)};
+        let socket;
+        let timer;
+        function connect() {
+          socket = new WebSocket(url);
+          socket.onopen = () => {
+            timer = setInterval(() => {
+              if (socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({sent_at: performance.now()}));
+              }
+            }, 500);
+          };
+          socket.onmessage = (event) => {
+            const payload = JSON.parse(event.data);
+            postMessage({rtt_ms: performance.now() - payload.sent_at});
+          };
+          socket.onclose = () => {
+            clearInterval(timer);
+            setTimeout(connect, 1000);
+          };
+        }
+        connect();
+      `;
+      const workerUrl = URL.createObjectURL(new Blob([workerSource], {type: "text/javascript"}));
+      const worker = new Worker(workerUrl);
+      URL.revokeObjectURL(workerUrl);
+      worker.onmessage = (event) => {
+        document.getElementById("network-rtt").textContent = `${event.data.rtt_ms.toFixed(1)} ms`;
+      };
+    }
+
+    function connectInputStream() {
+      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+      inputSocket = new WebSocket(`${protocol}://${window.location.host}/ws/input`);
+      const status = document.getElementById("input-status");
+
+      inputSocket.onopen = () => {
+        status.textContent = "connected";
+        pollInputState();
+        if (TELEOP_DEVICE_TYPES.includes("lerobot")) {
+          lerobotDevice.attach();
+        }
+      };
+      inputSocket.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        if (payload.lerobot_tx) {
+          lerobotDevice.handleTxPackets(payload.lerobot_tx);
+        }
+        if (payload.lerobot_tx && !payload.devices && !payload.active_device) {
+          return;
+        }
+        renderInput(payload);
+      };
+      inputSocket.onerror = () => {
+        status.textContent = "error";
+      };
+      inputSocket.onclose = () => {
+        status.textContent = "reconnecting";
+        lerobotDevice.detach();
+        setTimeout(connectInputStream, 1000);
+      };
+    }
+
+    function connectConsoleStream() {
+      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+      consoleSocket = new WebSocket(`${protocol}://${window.location.host}/ws/console`);
+      consoleSocket.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        renderConsole(payload.console);
+      };
+      consoleSocket.onclose = () => {
+        setTimeout(connectConsoleStream, 1000);
+      };
+    }
+
+    function pollInputState() {
+      fetch("/api/input/latest", {cache: "no-store"})
+        .then((response) => response.json())
+        .then(renderInput)
+        .catch(() => {});
+    }
+
+    function setInterventionStatus(isActive) {
+      const status = document.getElementById("intervention-status");
+      document.body.classList.toggle("is-intervening", isActive);
+      status.textContent = isActive ? "on" : "off";
+      status.className = isActive ? "status-on" : "status-off";
+    }
+
+    function asBool(value) {
+      if (typeof value === "boolean") {
+        return value;
+      }
+      if (typeof value === "number") {
+        return value !== 0;
+      }
+      if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") {
+          return true;
+        }
+        if (
+          normalized === "false" ||
+          normalized === "0" ||
+          normalized === "no" ||
+          normalized === "off" ||
+          normalized === ""
+        ) {
+          return false;
+        }
+      }
+      return false;
+    }
+
+    function isDeviceIntervening(device) {
+      return asBool(device.active) || asBool(device.is_intervening);
+    }
+
+    function renderInput(input) {
+      const devices = input.devices || [];
+      const {record_control: _recordControl, ...summaryInput} = input;
+      let activeDevice = input.active_device || {};
+      for (const device of devices) {
+        if (!activeDevice.device && isDeviceIntervening(device)) {
+          activeDevice = device;
+          break;
+        }
+      }
+      const isActive = asBool(input.is_intervening) || asBool(input.active) || isDeviceIntervening(activeDevice);
+      setInterventionStatus(isActive);
+      renderDataInto(document.getElementById("teleop-summary"), {
+        ...summaryInput,
+        devices: `${devices.length} device${devices.length === 1 ? "" : "s"}`
+      });
+      renderDevices(devices);
+    }
+
+    function renderConsole(consoleState) {
+      const terminal = document.getElementById("console-terminal");
+      const events = consoleState.events || [];
+      for (const item of events) {
+        if (Number(item.id || 0) <= lastConsoleEventId) {
+          continue;
+        }
+        lastConsoleEventId = Number(item.id || lastConsoleEventId);
+        if (item.type === "frontend") {
+          continue;
+        }
+        appendConsoleText(`${item.text || ""}\n`);
+      }
+    }
+
+    function sendConsoleText(text) {
+      const trimmed = text.trimEnd();
+      if (!inputSocket || inputSocket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      inputSocket.send(JSON.stringify({
+        type: "console_text",
+        payload: {text: trimmed}
+      }));
+    }
+
+    function appendConsoleText(text) {
+      const terminal = document.getElementById("console-terminal");
+      const oldInputStart = consoleInputStart;
+      const selectionStart = terminal.selectionStart;
+      const selectionEnd = terminal.selectionEnd;
+      const wasActive = document.activeElement === terminal;
+      const currentInput = terminal.value.slice(consoleInputStart);
+      terminal.value = terminal.value.slice(0, consoleInputStart) + text + currentInput;
+      consoleInputStart += text.length;
+      terminal.scrollTop = terminal.scrollHeight;
+      if (wasActive) {
+        if (selectionStart < oldInputStart) {
+          terminal.selectionStart = selectionStart;
+          terminal.selectionEnd = Math.min(selectionEnd, oldInputStart);
+        } else {
+          terminal.selectionStart = selectionStart + text.length;
+          terminal.selectionEnd = selectionEnd + text.length;
+        }
+      }
+    }
+
+    function clampConsoleCursor() {
+      const terminal = document.getElementById("console-terminal");
+      if (terminal.selectionStart < consoleInputStart) {
+        terminal.selectionStart = terminal.value.length;
+        terminal.selectionEnd = terminal.value.length;
+      }
+    }
+
+    function poseToJson(pose) {
+      if (!pose) {
+        return null;
+      }
+      const transform = pose.transform;
+      return {
+        position: [
+          transform.position.x,
+          transform.position.y,
+          transform.position.z
+        ],
+        orientation: [
+          transform.orientation.x,
+          transform.orientation.y,
+          transform.orientation.z,
+          transform.orientation.w
+        ],
+        matrix: Array.from(transform.matrix)
+      };
+    }
+
+    function buttonToJson(button) {
+      return {
+        pressed: Boolean(button.pressed),
+        touched: Boolean(button.touched),
+        value: Number(button.value || 0)
+      };
+    }
+
+    function gamepadToJson(gamepad) {
+      const buttons = Array.from(gamepad.buttons || []).map(buttonToJson);
+      return {
+        axes: Array.from(gamepad.axes || []),
+        raw_buttons: buttons,
+        buttons: {
+          trigger: buttons[0] || {pressed: false, touched: false, value: 0},
+          squeeze: buttons[1] || {pressed: false, touched: false, value: 0},
+          thumbstick: buttons[3] || {pressed: false, touched: false, value: 0},
+          primary: buttons[4] || {pressed: false, touched: false, value: 0},
+          secondary: buttons[5] || {pressed: false, touched: false, value: 0}
+        }
+      };
+    }
+
+    function sendXRFrame(time, frame) {
+      if (!inputSocket || inputSocket.readyState !== WebSocket.OPEN || !xrSession || !xrReferenceSpace) {
+        return;
+      }
+      const controllers = {};
+      for (const inputSource of xrSession.inputSources) {
+        const hand = inputSource.handedness || "none";
+        if (!inputSource.gamepad && !inputSource.gripSpace && !inputSource.targetRaySpace) {
+          continue;
+        }
+        controllers[hand] = {
+          handedness: hand,
+          profiles: Array.from(inputSource.profiles || []),
+          target_ray_mode: inputSource.targetRayMode,
+          grip_pose: poseToJson(inputSource.gripSpace ? frame.getPose(inputSource.gripSpace, xrReferenceSpace) : null),
+          target_ray_pose: poseToJson(
+            inputSource.targetRaySpace ? frame.getPose(inputSource.targetRaySpace, xrReferenceSpace) : null
+          ),
+          ...(inputSource.gamepad ? gamepadToJson(inputSource.gamepad) : {axes: [], raw_buttons: [], buttons: {}})
+        };
+      }
+      const payload = {
+        event_type: "xr_frame",
+        timestamp: Date.now() / 1000,
+        xr_time: time,
+        reference_space: xrReferenceSpace ? xrReferenceSpace.constructor.name : null,
+        input_source_count: xrSession.inputSources.length,
+        controllers
+      };
+      inputSocket.send(JSON.stringify({
+        type: "xr_frame",
+        device: "xr_controller",
+        payload
+      }));
+    }
+
+    function onXRFrame(time, frame) {
+      xrRenderer.drawFrame(frame, xrSession, xrReferenceSpace);
+      sendXRFrame(time, frame);
+      if (xrSession) {
+        xrSession.requestAnimationFrame(onXRFrame);
+      }
+    }
+
+    async function prepareXRRenderLayer(session) {
+      await xrRenderer.prepareSession(session);
+    }
+
+    async function startXR() {
+      const status = document.getElementById("xr-status");
+      if (!window.isSecureContext) {
+        status.textContent = "need HTTPS";
+        return;
+      }
+      if (!navigator.xr) {
+        status.textContent = "WebXR unavailable";
+        return;
+      }
+      try {
+        status.textContent = "requesting";
+        xrSession = await navigator.xr.requestSession("immersive-vr", {
+          optionalFeatures: ["local-floor", "bounded-floor"]
+        });
+        xrSession.addEventListener("end", () => {
+          xrSession = null;
+          xrReferenceSpace = null;
+          status.textContent = "ended";
+        });
+        await prepareXRRenderLayer(xrSession);
+        xrReferenceSpace = await xrSession.requestReferenceSpace("local-floor")
+          .catch(() => xrSession.requestReferenceSpace("local"));
+        status.textContent = "running";
+        xrSession.requestAnimationFrame(onXRFrame);
+      } catch (error) {
+        status.textContent = `error: ${error.message || error}`;
+      }
+    }
+
+    if (TELEOP_DEVICE_TYPES.includes("gamepad")) {
+      gamepadDevice.attach();
+    }
+    setTheme(localStorage.getItem("teleop-theme") || "system");
+    restorePanelWidths();
+    initPanelResizers();
+    document.getElementById("theme-toggle").addEventListener("click", () => {
+      const current = localStorage.getItem("teleop-theme") || "system";
+      const next = themeModes[(themeModes.indexOf(current) + 1) % themeModes.length];
+      setTheme(next);
+    });
+    document.getElementById("obs-reset-layout").addEventListener("click", () => {
+      selectedImageName = null;
+      updateImageSelection();
+    });
+    document.getElementById("console-terminal").addEventListener("keydown", (event) => {
+      const terminal = event.currentTarget;
+      if (event.key === "Enter") {
+        event.preventDefault();
+        const text = terminal.value.slice(consoleInputStart);
+        terminal.value += "\n";
+        consoleInputStart = terminal.value.length;
+        sendConsoleText(text);
+        terminal.scrollTop = terminal.scrollHeight;
+        return;
+      }
+      if (
+        terminal.selectionStart < consoleInputStart &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)
+      ) {
+        event.preventDefault();
+        terminal.selectionStart = terminal.value.length;
+        terminal.selectionEnd = terminal.value.length;
+      }
+    });
+    document.getElementById("console-terminal").addEventListener("pointerdown", () => {
+      if (TELEOP_DEVICE_TYPES.includes("lerobot")) {
+        lerobotDevice.requestConnect();
+      }
+    });
+    document.getElementById("console-terminal").addEventListener("paste", (event) => {
+      event.preventDefault();
+      clampConsoleCursor();
+      const text = event.clipboardData.getData("text");
+      document.execCommand("insertText", false, text);
+    });
+    if (TELEOP_DEVICE_TYPES.includes("xr_controller")) {
+      document.getElementById("xr-panel").style.display = "block";
+      document.getElementById("xr-secure").textContent = window.isSecureContext ? "yes" : "no";
+      document.getElementById("xr-enter").addEventListener("click", startXR);
+      if (!window.isSecureContext) {
+        document.getElementById("xr-status").textContent = "need HTTPS";
+      } else if (navigator.xr) {
+        navigator.xr.isSessionSupported("immersive-vr")
+          .then((supported) => {
+            document.getElementById("xr-status").textContent = supported ? "ready" : "unsupported";
+          })
+          .catch(() => {
+            document.getElementById("xr-status").textContent = "unknown";
+          });
+      } else {
+        document.getElementById("xr-status").textContent = "WebXR unavailable";
+      }
+    }
+
+    keyboardRouter.attach();
+    startNetworkProbe();
+    connectObsStream();
+    connectInputStream();
+    connectConsoleStream();
+  </script>
+</body>
+</html>

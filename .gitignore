@@ -2,7 +2,8 @@ __pycache__/
 *.pyc
 *.log
 work/data/
-work/logs/
+work/logs/*
+!work/logs/grpo_opt.log
 work/runs/
 results/runs/
 .venv/

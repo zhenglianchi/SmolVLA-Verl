@@ -1,7 +1,7 @@
 #!/bin/bash
 # 看门狗：serve/训练循环意外退出时自动恢复（断点续训），直到 STOP_AT 停训；评估期间不干预
 LOG=/home/ubuntu/runs/watchdog.log
-STOP_AT="2026-08-18 16:30"
+STOP_AT="2026-08-19 17:00"
 STOP_EPOCH=$(date -d "$STOP_AT" +%s 2>/dev/null || echo 0)
 mkdir -p /home/ubuntu/runs
 if [ "$STOP_EPOCH" -gt 0 ] && [ "$(date +%s)" -ge "$STOP_EPOCH" ]; then
@@ -27,7 +27,7 @@ if ! pgrep -f run_loop_opt > /dev/null; then
   START=$((LAST + 1))
   echo "[$(date)] loop dead, restarting from round $START" >> "$LOG"
   cd /home/ubuntu/SmolVLA-Verl
-  setsid nohup env ROUNDS=60 INSTANCES=12 GRPO_LR=5e-6 GRPO_STEPS=3 BATCH_SIZE=32 START_ROUND=$START STOP_AT="$STOP_AT" \
+  setsid nohup env ROUNDS=15 INSTANCES=12 GRPO_LR=5e-6 GRPO_STEPS=1 BATCH_SIZE=32 START_ROUND=$START STOP_AT="$STOP_AT" \
     bash scripts/run_loop_opt.sh >> /home/ubuntu/grpo_opt.log 2>&1 < /dev/null &
   echo "[$(date)] restart issued, pid $!" >> "$LOG"
 fi

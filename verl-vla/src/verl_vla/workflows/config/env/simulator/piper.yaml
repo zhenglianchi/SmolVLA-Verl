@@ -1,0 +1,115 @@
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+
+# Target class instantiated from this configuration.
+_target_: verl_vla.envs.piper.config.PiperConfig
+
+# Simulator backend selected by EnvWorker.
+simulator_type: piper
+
+# Physical arms in flat action/state order. Keep one item for single-arm
+# operation or both for dual-arm operation.
+arms:
+
+  # First logical teleoperation hand.
+  - name: left
+
+    # SocketCAN interface connected to this arm.
+    can_channel: can_right
+
+    # AgileX driver and URDF model: piper, piper_h, piper_l, or piper_x.
+    model: piper_x
+
+    # Reset pose in joint radians; null captures startup feedback instead.
+    initial_joint_angles: [0.00001745, -0.00797615, 0.01717404, 0.58512163, 0.04897394, -0.02546435]
+
+  # Second logical teleoperation hand.
+  - name: right
+
+    # SocketCAN interface connected to this arm.
+    can_channel: can_left
+
+    # AgileX driver and URDF model: piper, piper_h, piper_l, or piper_x.
+    model: piper_x
+
+    # Reset pose in joint radians; null captures startup feedback instead.
+    initial_joint_angles: [0.03780383, 0.01403245, 0.01569051, 0.81677918, 0.01125737, 0.29810224]
+
+# V4L2 camera observations. Any number may be listed; [] disables cameras.
+cameras:
+
+  # Stable observation and LeRobot feature name.
+  - name: height
+
+    # V4L2 device path.
+    device: /dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._Dabai_DC1_CC1N16202MR-video-index0
+
+    # Captured image width in pixels.
+    width: 320
+
+    # Captured image height in pixels.
+    height: 240
+
+    # V4L2 input pixel format converted to RGB8 by ROS.
+    pixel_format: YUYV
+
+  # Stable observation and LeRobot feature name.
+  - name: right_wrist
+
+    # V4L2 device path.
+    device: /dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._Dabai_DC1_CC1N16200MD-video-index0
+
+    # Captured image width in pixels.
+    width: 320
+
+    # Captured image height in pixels.
+    height: 240
+
+    # V4L2 input pixel format converted to RGB8 by ROS.
+    pixel_format: YUYV
+
+  # Stable observation and LeRobot feature name.
+  - name: left_wrist
+
+    # V4L2 device path.
+    device: /dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._Dabai_DC1_CC1N162035J-video-index0
+
+    # Captured image width in pixels.
+    width: 320
+
+    # Captured image height in pixels.
+    height: 240
+
+    # V4L2 input pixel format converted to RGB8 by ROS.
+    pixel_format: YUYV
+
+# Task string published in observations and recordings.
+task_description: Put the white object into the box.
+
+# QuestArm IK position objective weight.
+ik_position_weight: 5.0
+
+# QuestArm IK smoothing objective weight.
+ik_smooth_weight: 0.5
+
+# Duration in seconds of the smooth joint reset trajectory.
+reset_duration_s: 3.0
+
+# Maximum time in seconds to wait for reset targets.
+reset_timeout_s: 15.0
+
+# Per-joint reset completion tolerance in radians.
+reset_joint_tolerance: 0.03
+
+# Maximum gripper opening width in meters.
+gripper_open_width: 0.1
+
+# Minimum gripper opening width in meters.
+gripper_close_width: 0.0
+
+# Relative gripper width change per keyboard step in meters.
+gripper_width_step: 0.005
+
+# Gripper force passed to agx_arm_ctrl.
+gripper_force: 1.0

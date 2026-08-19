@@ -1,0 +1,6 @@
+verl==0.7.1
+
+# Browser teleoperation server and control strategies.
+fastapi<1.0
+uvicorn[standard]
+scipy

@@ -1,0 +1,50 @@
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: "v0.12.2"
+    hooks:
+      - id: ruff
+        args: ["--fix", "--show-fixes", "--output-format=full"]
+        exclude: ^.*\.(ipynb)$
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: "v1.17.0"
+    hooks:
+      - id: mypy
+
+  - repo: local
+    hooks:
+      - id: check-commit-message
+        name: Check commit message
+        entry: python3 scripts/check_commit_message.py
+        language: python
+        stages: [commit-msg]
+
+      - id: check-license
+        name: Check license
+        entry: python3 tests/special_sanity/check_license.py --directories .
+        language: python
+        pass_filenames: false
+
+      - id: validate-structure
+        name: Validate test structure
+        entry: python3 tests/special_sanity/validate_structure.py --impl-root src/verl_vla --tests-root tests
+        language: python
+        pass_filenames: false
+
+      - id: check-config-docs
+        name: Check config YAML documentation format
+        entry: python3 tests/special_sanity/test_config_docs.py
+        language: python
+        files: ^src/verl_vla/workflows/config/.*\.yaml$
+        pass_filenames: false
+
+      - id: compileall
+        name: Compile all python files
+        entry: sh -c 'PYTHONWARNINGS=error python3 -m compileall -q . -x "(^|[\\/])(\\.venv|venv|\\.git)([\\/]|$)"'
+        language: python
+        pass_filenames: false

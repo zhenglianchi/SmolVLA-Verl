@@ -1,0 +1,108 @@
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ReCap value-model training stage.
+
+# Hydra configuration composition order.
+defaults:
+
+  # Base actor-only SFT trainer config.
+  - /base/sft@_here_
+
+  # ResNet-18 value-model-specific overrides.
+  - override /model/override@cluster.actor_rollout_ref.model.override_config: recap_resnet18_value_model
+
+  # Apply this stage config last.
+  - _self_
+
+
+# Whether to train the RECAP value model.
+enable: true
+
+# LeRobot dataset used when this stage runs without fresh collected datasets.
+data:
+
+  # Root directory used by this component.
+  root: /tmp/verl_vla_lerobot_records/local/verl_vla_libero_collected
+
+  # LeRobot dataset repository identifier.
+  repo_id: local/verl_vla_libero_collected
+
+
+# Value-model TrainCluster settings.
+cluster:
+
+  # Checkpoint lifecycle configuration.
+  checkpoint:
+
+    # Default directory used for local checkpoints.
+    default_local_dir: checkpoints/${recap.train_value_model.trainer.project_name}/${recap.train_value_model.trainer.experiment_name}
+
+  # Shared actor, rollout, and reference-policy configuration.
+  actor_rollout_ref:
+
+    # Policy model configuration.
+    model:
+
+      # Path to the model or artifact used by this component.
+      path: assets/hf_models/recap_resnet18_value_critic
+
+      # The image-and-state value critic does not consume language tokens.
+      load_tokenizer: false
+
+      # Whether Hugging Face may execute repository-provided model code.
+      trust_remote_code: true
+
+    # Actor training configuration.
+    actor:
+
+      # Checkpoint lifecycle configuration.
+      checkpoint:
+
+        # Training-state components written to each checkpoint.
+        save_contents: ["model", "optimizer", "extra", "hf_model"]
+
+        # Training-state components restored from a checkpoint.
+        load_contents: ["model", "optimizer", "extra"]
+
+      # Optimizer configuration.
+      optim:
+
+        # Optimizer learning rate.
+        lr: 1e-4
+
+      # FSDP execution configuration.
+      fsdp_config:
+
+        # FSDP module wrapping policy.
+        wrap_policy:
+
+          # Fusion layers wrapped as individual FSDP units.
+          transformer_layer_cls_to_wrap: ["ReCapResNet18ValueFusion"]
+
+
+# Value-model trainer settings.
+trainer:
+
+  # Tracking project name.
+  project_name: recap
+
+  # Tracking name for this experiment.
+  experiment_name: value_model
+
+  # Number of full return-dataset passes per training stage.
+  total_epochs: 20
+
+  # Whether checkpoint resume restores dataloader progress.
+  resume_dataloader_state: false

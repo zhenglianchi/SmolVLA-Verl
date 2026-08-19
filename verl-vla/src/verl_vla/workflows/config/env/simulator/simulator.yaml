@@ -1,0 +1,28 @@
+# Copyright 2026 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+
+# Simulator selection and per-simulator configs.
+
+# Hydra configuration composition order.
+defaults:
+
+  # LIBERO simulator config.
+  - /env/simulator@libero: libero
+
+  # Isaac Lab Arena simulator config.
+  - /env/simulator@arena: arena
+
+  # Real Piper arm config.
+  - /env/simulator@piper: piper
+
+  # Apply selector config last.
+  - _self_
+
+
+# Target class instantiated from this configuration.
+_target_: verl_vla.workers.env.config.SimulatorConfig
+
+# Active simulator backend. The selected value chooses which nested simulator
+# config EnvWorker will use to construct the concrete environment.
+simulator_type: libero
