@@ -1,17 +1,18 @@
 # 架构
 
 ```
-本地（8GB 4060 / WSL2）            服务器（RTX 4090 24GB）
-┌─────────────────────┐           ┌──────────────────────────────┐
-│ LIBERO 轨迹采集      │  上传      │ verl-vla（含 smolvla 扩展）    │
-│ scripts/collect_*   │ ────────▶ │ src/smolvla_verl/trainer/    │
-│ trajectory_uploader │  SFTP/scp │   grpo_libero.py 训练主循环    │
-└─────────────────────┘           │   - 12 实例并行 rollout       │
-        ▲                         │   - FlowGRPO（SDE logp + GRPO）│
-        │ 拉权重/评测结果          │   - 15 轮、续训、单权重夹覆盖   │
-        └─────────────────────────├──────────────────────────────┤
-                                  │ run_eval → 官方协议评估        │
-                                  └──────────────────────────────┘
+采集侧（run_loop_opt.sh 起 12 个 collect_remote.py）   服务器（RTX 4090 24GB）
+┌────────────────────────────────┐    HTTP    ┌──────────────────────────────┐
+│ LIBERO env + HTTP 客户端        │ ─────────▶ │ serve_smolvla.py :8000        │
+│ 每 chunk POST /predict          │            │  /predict：SDE 采样+记录轨迹  │
+│ episode 结束 POST /finish       │ ◀───────── │  /finish：终局 mask+组优势    │
+└────────────────────────────────┘  返回动作   │  /train：grpo_offline 重打分   │
+        ▲                                      │   + GRPO（SDE logp + 单权重夹）│
+        │ 下一轮读最新权重                      │   - 12 实例并行 rollout       │
+        └───────────────────────────────────── │   - 15 轮、续训、覆盖         │
+                                               ├──────────────────────────────┤
+                                               │ eval_parallel → 官方协议评估   │
+                                               └──────────────────────────────┘
 ```
 
 ## 算法（FlowGRPO）

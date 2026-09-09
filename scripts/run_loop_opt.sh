@@ -1,5 +1,6 @@
 #!/bin/bash
-# 优化版 GRPO（verl 式批量 + 固定 base 参考锚定）：12实例x4=48集/轮，steps=3，lr=5e-6，batch=32
+# 最终训练脚本：优化版 GRPO（verl 式批量 + 固定 base 参考锚定）：12 实例 × ROLLOUT_N = 48 集/轮
+# ROLLOUT_N=组内 rollout 数（默认 4，即每组 4 条同场景 episode）；steps/lr/batch 见下方 env
 # STOP_AT 时间截止 + START_ROUND 断点续训 + last_round 进度 + 最佳权重备份
 set -uo pipefail
 export MUJOCO_GL=egl
@@ -8,6 +9,7 @@ export LOCAL_PYTHON=/home/ubuntu/vla_serve/bin/python
 cd "$(dirname "$0")/.."
 ROUNDS=${ROUNDS:-60}
 INSTANCES=${INSTANCES:-12}
+ROLLOUT_N=${ROLLOUT_N:-4}
 GRPO_LR=${GRPO_LR:-5e-6}
 GRPO_STEPS=${GRPO_STEPS:-3}
 BATCH_SIZE=${BATCH_SIZE:-32}
@@ -23,7 +25,7 @@ for r in $(seq "$START_ROUND" "$ROUNDS"); do
     echo "=== reached stop time $STOP_AT, stopping training at round $r ==="
     break
   fi
-  echo "=== opt round $r/$ROUNDS ($INSTANCES instances x 4, lr=$GRPO_LR steps=$GRPO_STEPS batch=$BATCH_SIZE, stop=$STOP_AT) ==="
+  echo "=== opt round $r/$ROUNDS ($INSTANCES instances x $ROLLOUT_N, lr=$GRPO_LR steps=$GRPO_STEPS batch=$BATCH_SIZE, stop=$STOP_AT) ==="
   PIDS=()
   for i in $(seq 0 $((INSTANCES-1))); do
     task=${TASKS[$(( (r*INSTANCES + i) % 10 ))]}
@@ -31,7 +33,7 @@ for r in $(seq "$START_ROUND" "$ROUNDS"); do
     init_state=$(( (r + i) % 10 ))
     "$LOCAL_PYTHON" scripts/collect_remote.py \
       --server "$SERVER" --suite libero_spatial --task-id "$task" \
-      --rollout-n 4 --group-id "r${r}_g${i}" --session-id "r${r}_s${i}" \
+      --rollout-n "$ROLLOUT_N" --group-id "r${r}_g${i}" --session-id "r${r}_s${i}" \
       --eta 0.05 --max-steps 280 --action-steps 5 --seed "$seed" \
       --init-state-id "$init_state" \
       > "work/logs/opt_r${r}_i${i}.log" 2>&1 &
@@ -39,7 +41,7 @@ for r in $(seq "$START_ROUND" "$ROUNDS"); do
   done
   for pid in "${PIDS[@]}"; do wait "$pid"; done
   n_ok=$(grep -hac "success=True" work/logs/opt_r${r}_i*.log | awk '{s+=$1} END{print s+0}')
-  echo "  round $r success rate: $n_ok / $((INSTANCES*4)) = $(awk "BEGIN{printf \"%.1f\", $n_ok*100/($INSTANCES*4)}")%"
+  echo "  round $r success rate: $n_ok / $((INSTANCES*ROLLOUT_N)) = $(awk "BEGIN{printf \"%.1f\", $n_ok*100/($INSTANCES*ROLLOUT_N)}")%"
   TRAIN_RESP=$(curl -s -X POST "$SERVER/train?lr=$GRPO_LR&steps=$GRPO_STEPS&batch_size=$BATCH_SIZE&chunk_discount=0.99")
   if [[ "$TRAIN_RESP" != *trained* ]]; then
     echo "  ERROR: /train failed: $TRAIN_RESP"
@@ -52,7 +54,7 @@ for r in $(seq "$START_ROUND" "$ROUNDS"); do
     BEST_RATE=$n_ok
     rm -rf "$BEST_DIR"
     cp -r /home/ubuntu/runs/smolvla_grpo "$BEST_DIR"
-    echo "  NEW BEST round $r ($n_ok/$((INSTANCES*4))) -> $BEST_DIR"
+    echo "  NEW BEST round $r ($n_ok/$((INSTANCES*ROLLOUT_N))) -> $BEST_DIR"
   fi
   echo "  restarting serve with latest weights..."
   CHECKPOINT=/home/ubuntu/runs/smolvla_grpo bash /home/ubuntu/SmolVLA-Verl/scripts/serve_start.sh
@@ -60,5 +62,5 @@ done
 echo "OPT_LOOP_DONE"
 echo "=== starting official eval (10 tasks x 10 trials) on final weights ==="
 OUT=/home/ubuntu/results/grpo_opt_libero_spatial_pertask POLICY=/home/ubuntu/runs/smolvla_grpo \
-  bash /home/ubuntu/SmolVLA-Verl/scripts/eval_task_loop.sh
+  bash /home/ubuntu/SmolVLA-Verl/scripts/eval_parallel.sh
 echo "OPT_ALL_DONE"

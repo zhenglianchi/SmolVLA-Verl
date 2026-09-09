@@ -23,9 +23,9 @@
 | `verl-vla/` | **官方 verl-vla 完整源码**（固定上游 commit `74df2cb`，已应用本项目的 SmolVLA 注册补丁），顶层内置便于学习 |
 | `patches/` | 对 verl-vla 的改动（`apply_patch.sh` + `patch_registration.py`，可重新应用） |
 | `src/smolvla_verl/` | 本项目核心：`models/smolvla/`（SDE 采样/重打分/GRPO 损失/可训练包装）、`trainer/grpo_libero.py`（在线训练主循环）、`trainer/grpo_offline.py`（离线训练） |
-| `scripts/` | 采集（`collect_remote.py`）、训练（`run_loop_opt.sh`）、评估（`eval_task_loop.sh` / `eval_parallel.sh`）、监控、杀进程脚本 |
-| `configs/` | GRPO smoke/formal、评估配置 |
-| `docs/` | 架构、安装、评测协议、**verl-vla 学习导读**、简历亮点 |
+| `scripts/` | **最终链路**：采集 `collect_remote.py` + 训练 `run_loop_opt.sh` + 评估 `eval_parallel.sh`（+ `parse_eval_results.py`）、运维 `serve_start.sh` / `watchdog.sh` |
+| `configs/` | GRPO/评估参数**备忘 YAML**（仅参考，脚本不加载，实际以 env/CLI 参数为准） |
+| `docs/` | 架构、安装、**任务剖析**（调用链/变量/JSON/时间线）、修改与补丁、简历亮点 |
 | `results/` | 评估结果汇总（正式数据见服务器 `results/`） |
 | `work/` | 正式训练日志（`work/logs/grpo_opt.log`）、运行产物索引 |
 
@@ -33,14 +33,15 @@
 
 如果你是想学习 VLA 的 RL 训练，按这个顺序看：
 
-1. [docs/数据流与源码导读.md](docs/数据流与源码导读.md) —— **端到端数据流**（轨迹如何变成梯度）+
-   关键源码定位
-2. [docs/learning-verl-vla.md](docs/learning-verl-vla.md) —— verl-vla 框架导读 + 本项目怎么接入 SmolVLA
-3. [docs/architecture.md](docs/architecture.md) —— 平台架构与 FlowGRPO 算法
-4. [docs/修改与补丁汇总.md](docs/修改与补丁汇总.md) —— 全部修改/修复清单（排障素材）
-5. `verl-vla/src/verl_vla/models/smolvla/` —— 我们加的 SDE / GRPO 核心代码
+1. [docs/任务剖析.md](docs/任务剖析.md) —— **任务级剖析**：一条轨迹的完整调用链、变量字典、
+   完整 JSON、15 轮真实训练指标；附录 A 为端到端数据流 + 关键源码定位
+2. [docs/architecture.md](docs/architecture.md) —— 平台架构与 FlowGRPO 算法
+3. [docs/修改与补丁汇总.md](docs/修改与补丁汇总.md) —— 全部修改/修复清单（排障素材）
+4. [docs/任务剖析.md](docs/任务剖析.md) 附录 B —— verl-vla 源码地图 + 本项目怎么接入 SmolVLA
+5. `src/smolvla_verl/models/smolvla/` —— 我们加的 SDE / GRPO 核心代码（源），同一份拷贝进
+   `verl-vla/src/verl_vla/models/smolvla/`
 6. `src/smolvla_verl/trainer/grpo_libero.py` —— 训练主循环（采集→训练→覆盖权重）
-7. [docs/训练评测分析.md](docs/训练评测分析.md) + [RESULTS.md](RESULTS.md) —— 实验数据与分析
+7. [RESULTS.md](RESULTS.md) —— 实验数据、评测协议与基线、训练配置演化（M1→M3）、根因分析
 8. [docs/简历亮点.md](docs/简历亮点.md) —— 简历/面试怎么讲
 
 ## 快速开始（服务器）
@@ -54,14 +55,11 @@ pip install --no-deps lerobot==0.4.4
 pip install verl==0.7.1
 cd verl-vla && pip install -e ".[libero]"
 
-# 2. 冒烟（单任务、2 集、1 轮）
-bash scripts/run_grpo_smoke.sh
-
-# 3. 正式训练（12 实例 × 4 = 48 集/轮、lr=5e-6、steps=1、batch=32、续训、单权重夹）
+# 2. 正式训练（12 实例 × ROLLOUT_N(默认 4) = 48 集/轮、lr=5e-6、steps=1、batch=32、续训、单权重夹）
 #    默认跑到 60 轮，可用 ROUNDS/STOP_AT 控制，例如 15 轮：
 STOP_AT="2026-08-19 17:00" ROUNDS=15 bash scripts/run_loop_opt.sh
 
-# 4. 官方评估（10 任务并行，seed=1000 确定性）
+# 3. 官方评估（10 任务并行，seed=1000 确定性）
 OUT=/home/ubuntu/results/grpo_final_pertask POLICY=/home/ubuntu/runs/smolvla_grpo \
   bash scripts/eval_parallel.sh
 ```

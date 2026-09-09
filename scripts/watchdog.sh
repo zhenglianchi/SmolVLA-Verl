@@ -7,7 +7,7 @@ mkdir -p /home/ubuntu/runs
 if [ "$STOP_EPOCH" -gt 0 ] && [ "$(date +%s)" -ge "$STOP_EPOCH" ]; then
   exit 0
 fi
-if pgrep -f eval_task_loop > /dev/null || pgrep -f lerobot_eval > /dev/null; then
+if pgrep -f eval_parallel > /dev/null || pgrep -f lerobot_eval > /dev/null; then
   exit 0
 fi
 if [ -f /home/ubuntu/grpo_opt.log ] && grep -q "OPT_ALL_DONE" /home/ubuntu/grpo_opt.log; then
@@ -27,7 +27,7 @@ if ! pgrep -f run_loop_opt > /dev/null; then
   START=$((LAST + 1))
   echo "[$(date)] loop dead, restarting from round $START" >> "$LOG"
   cd /home/ubuntu/SmolVLA-Verl
-  setsid nohup env ROUNDS=15 INSTANCES=12 GRPO_LR=5e-6 GRPO_STEPS=1 BATCH_SIZE=32 START_ROUND=$START STOP_AT="$STOP_AT" \
+  setsid nohup env ROUNDS=15 INSTANCES=12 ROLLOUT_N=${ROLLOUT_N:-4} GRPO_LR=5e-6 GRPO_STEPS=1 BATCH_SIZE=32 START_ROUND=$START STOP_AT="$STOP_AT" \
     bash scripts/run_loop_opt.sh >> /home/ubuntu/grpo_opt.log 2>&1 < /dev/null &
   echo "[$(date)] restart issued, pid $!" >> "$LOG"
 fi

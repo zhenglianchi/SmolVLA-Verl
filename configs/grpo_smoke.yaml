@@ -1,3 +1,5 @@
+# 备忘：早期冒烟 run 的参数记录（冒烟脚本 scripts/run_grpo_smoke.sh 已随清理删除）。
+# 本项目脚本【不读取】本 YAML。
 suite: libero_spatial
 task_ids: [0]
 rollout_n: 2

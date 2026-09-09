@@ -2,6 +2,7 @@
 # 官方评估：10 任务分两波并行（每波 5 个独立进程），逐任务独立目录，seed=1000 确定性
 # 用法：OUT=/home/ubuntu/results/grpo_final_pertask POLICY=/home/ubuntu/runs/smolvla_grpo bash scripts/eval_parallel.sh
 set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
 export MUJOCO_GL=egl
 export HF_ENDPOINT=https://hf-mirror.com
 export HF_HUB_OFFLINE=1
@@ -38,3 +39,6 @@ for wave in 0 1; do
   for p in "${PIDS[@]}"; do wait $p; done
 done
 echo "PARALLEL_EVAL_DONE" >> "$OUT/parallel_status.log"
+echo "[eval] aggregating"
+"$ENV/bin/python" "$HERE/parse_eval_results.py" "$OUT" | tee "$OUT/summary.txt"
+echo "[eval] EVAL_OK"

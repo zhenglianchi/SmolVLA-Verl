@@ -1,3 +1,5 @@
+# 备忘：最终官方评估参数（seed=1000、10 trials/任务、确定性 ODE）。
+# 本项目脚本【不读取】本 YAML——实际以 scripts/eval_parallel.sh 的 env/CLI 为准。
 task: libero_spatial
 n_episodes_per_task: 10
 seed: 1000

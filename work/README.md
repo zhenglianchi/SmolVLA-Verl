@@ -12,4 +12,4 @@
 
 > 说明：在线训练的轨迹 session 保存在 serve 进程内存中，每轮 `/train` 消费后 `/clear`，没有落盘
 > 完整轨迹；逐轮 episode 成功/步数记录在采集日志中。如需保存完整轨迹，可临时在
-> `serve_smolvla.py` 加 pickle dump（调试技巧见 `docs/learning-verl-vla.md`）。
+> `serve_smolvla.py` 加 pickle dump（调试技巧见 `docs/任务剖析.md` 附录 B）。

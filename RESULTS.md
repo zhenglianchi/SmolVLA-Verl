@@ -3,6 +3,21 @@
 所有数字均来自服务器 `/home/ubuntu/results/` 下的逐任务评估日志，协议为 LIBERO-Spatial 官方
 10 任务 × 10 trials（seed=1000，确定性 ODE 采样，`n_action_steps=5` 与采集端一致）。
 
+## 评测协议与基线（官方口径）
+
+- 每任务 **10 trials**，LIBERO 每套件 10 任务 → 每套 100 个 episode
+- eval seed 1000；step caps：Spatial/Object 280、Goal 300、Long 520
+- 确定性 ODE 采样评估（不是 SDE）；二进制成功判定（任务完全完成 = 1）
+- 推理时 `n_action_steps=5`（与采集端一致的 chunk 回退执行）；单进程逐任务评估容易触发偶发
+  CUDA 崩溃，正式评估用**逐任务独立进程并行**（`eval_parallel.sh`，两波 × 5 任务，失败可重跑单任务）
+
+| 套件 | 官方 SmolVLA 0.45B | 本项目实测（lerobot eval，seed=1000） |
+|---|---|---|
+| LIBERO-Spatial | 90% | **63.0%**（2026-08-19 重测两次一致；2026-08-17 首次 63.0%） |
+
+> 社区复评普遍比论文低（协议/实现差异），63.0% 是可信可复现基线。GRPO 修复后官方指标 63.0% 与
+> base 持平，未退化也未超越；100 集评估噪声约 ±5%。
+
 ## 一、最终评估（2026-08-19，修复后 15 轮 GRPO）
 
 **GRPO 15 轮**（`results/grpo_final_pertask_run2`，与 run1 完全一致，确定性复现）：
@@ -40,7 +55,8 @@
 > 采集成功率只反映在线 rollout 表现（初始状态与任务逐轮轮换），不代表官方指标；训练全程无崩溃、
 > 无退化（watchdog 未触发），ratio_mean 全程稳定在 1.000000 附近。
 
-### 配置（正式 run，见 `configs/grpo_formal.yaml` 与 `work/logs/grpo_opt.log`）
+### 配置（正式 run；`configs/grpo_formal.yaml` 仅为备忘不加载，实际参数由 `run_loop_opt.sh` env 控制，
+正式日志见 `work/logs/grpo_opt.log`）
 
 - 12 实例 × 4 rollout = 48 集/轮，15 轮，任务轮换 + 初始状态轮换 `init_state=(r+i)%10`
 - verl 式固定 base 锚定：训练时重算 old log-prob（逐 chunk 重打分），`lr=5e-6, steps=1, batch=32`
@@ -98,3 +114,29 @@ OUT=/home/ubuntu/results/base_final_pertask POLICY=/home/ubuntu/models/smolvla_l
 服务器保留产物：`/home/ubuntu/runs/smolvla_grpo`（最终权重）、`smolvla_best`（最佳）、
 `smolvla_grpo_r16_bak`（旧管道权重）、`/home/ubuntu/results/grpo_final_pertask_run2` 与
 `base_final_pertask_run2`（正式评估含视频）、`work/logs/grpo_opt.log`（正式训练日志）。
+
+## 六、训练配置演化（M1 → M3）
+
+### M1（2026-08-16~17）：第一版 FlowGRPO
+
+- 4 实例 × 4 rollout = 16 集/轮，`lr=1e-6`、SDE eta 偏大、无固定 base 锚定
+- 结果：R3 官方 62.0%（与 base 63.0% 接近），R5 关机电量中断
+- 问题：无 KL 锚定 → 策略漂移，后期采集成功率降到 45%
+
+### M2（2026-08-18）：verl 式固定 base 锚定（旧管道 R16）
+
+- 12 实例 × 4 = 48 集/轮，16 轮；固定 base 参考做 KL 锚定；`lr=5e-6, steps=3, batch=32`
+- 采集成功率全程稳定（~65%），**但官方指标 55.0% < Base 63.0%，训练后反而退化**
+- 诊断：批量重打分破坏 logp、组内场景不一致、终局 mask 错误、加权分母 bug
+
+### M3（2026-08-19）：修复后 15 轮（正式结果）
+
+- 逐 chunk 重打分 + ratio 守卫、reset-matched 组、终局 mask、mixed 组才更新、
+  episode 均衡加权、`chunk_discount=0.99`、eta=0.05、`steps=1`
+- **GRPO 63.0% = Base 63.0%**：修复了退化，但未超越 base（重测 ×2 一致）
+
+## 七、如果继续做（下一步假设）
+
+1. 采集初始状态 0-9 全覆盖且每状态多采样（当前最大嫌疑）
+2. 每组 rollout 4 → 8，放宽 KL / 提高 lr（监控 ratio_mean 稳定在 1 附近再放）
+3. 评估 200+ 集或多次运行取均值，区分信号与噪声

@@ -1,3 +1,6 @@
+# 备忘：2026-08-19 正式 run 的参数记录（12 实例 × rollout_n 4 = 48 集/轮）。
+# 本项目脚本【不读取】本 YAML——实际参数由 run_loop_opt.sh / watchdog.sh 的 env 控制
+# （ROUNDS / INSTANCES / ROLLOUT_N / GRPO_LR / GRPO_STEPS / BATCH_SIZE / STOP_AT）。
 suite: libero_spatial
 task_ids: [0,1,2,3,4,5,6,7,8,9]
 rollout_n: 4

@@ -43,8 +43,6 @@ huggingface-cli download lerobot/smolvla_libero --local-dir /home/ubuntu/models/
 export PYTHONPATH="$PWD/src:${PYTHONPATH:-}"
 # Stage-A：verl-vla builder 能否构建 SmolVLA 可训练模型
 python3 verl-vla/scripts/smoke_smolvla_build.py
-# Stage-B：单任务 1 轮 GRPO（2 集）
-bash scripts/run_grpo_smoke.sh
 ```
 
 ## 三端同步约定
